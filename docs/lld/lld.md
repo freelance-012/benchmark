@@ -326,40 +326,23 @@ Git 记录规则：
 
 #### 1.1 输入
 
-- 编译成功的本次 run 算法副本；
-- `run.baseline_script_path` 指向的 baseline；
-- 一个已生成的数据实例配置；
+- 已在 `build.algorithm_path` 中完成编译并确认可用的运行入口；
+- 已生成的数据实例配置；
 - 当前有效 Segment；
 - 用户选择的算法和数据集；
 - 本次 run 的算法失败阈值，未设置时采用系统默认值 1；
-- 系统分配的当前 Segment 输出目录。
+- 系统分配的当前 Segment `result/` 目录。
 
 #### 1.2 处理过程
 
-1. 使用 `algorithm` 查询算法注册表，取得运行适配器、固定输出和数据集允许范围，并检查当前数据集与 voeval 工作流兼容；
-2. 复用 `build.algorithm_path`，定位本次 run 的算法副本；
-3. 由算法注册记录指定的运行适配器根据 baseline 和本次编译后的代码生成运行脚本；
-4. 将运行脚本保存到系统规定的 run 工作区；
-5. 从数据实例 YAML 取得数据集路径和当前 Segment 的起止时间戳；
-6. 为当前 Segment 创建独立输出目录；
-7. 自动组合运行脚本、数据集路径、起止时间戳和输出目录，形成最终命令；
-8. 使用系统提供的固定基础环境，并由生成脚本执行 baseline 和运行适配器规定的算法专用环境初始化；
-9. 保存生成的运行脚本、最终命令和执行环境摘要。
+1. 使用 `algorithm` 查询算法注册表，取得运行入口、参数映射、固定输出和数据集允许范围，并检查当前数据集与 voeval 工作流兼容；
+2. 使用第四部分已经确认的算法运行入口，不创建或定位算法副本；
+3. 从数据实例 YAML 取得数据集路径和当前 Segment 的起止时间戳；
+4. 为当前 Segment 创建独立的 `result/` 目录；
+5. 根据算法内置契约，将运行入口、数据集路径和起止时间戳组合成最终命令参数列表；
+6. 保存实际命令摘要，不生成或保存新的运行脚本。
 
 每个有效 Segment 都单独生成命令并执行一次。两个 Segment 即使属于同一数据集，也不能共用输出文件或运行状态。
-
-#### 1.3 自动调整运行脚本
-
-自动调整发生在编译完成、正式运行开始之前：
-
-- 以该算法首次接入时保存的 baseline 和算法注册记录指定的运行适配器为基础；
-- 只修改本次 run 的算法副本；
-- 自动填入当前算法目录、数据集路径、Segment 起止时间戳和输出目录；
-- 自动生成本次可执行的运行脚本和最终命令；
-- 不修改原始算法仓库；
-- 不分析任意代码差异后猜测未知运行逻辑。
-
-运行脚本无法生成时，系统保留日志并停止本次 run，提示用户检查算法代码或 baseline。用户不需要在每次运行前重新填写脚本路径、命令或环境。
 
 ### 2. 执行运行命令
 
@@ -368,11 +351,12 @@ Git 记录规则：
 3. 保存标准输出、错误输出、开始时间和进程信息；
 4. 可选采集算法进程树的 CPU、内存和耗时；
 5. 运行超时或用户终止时结束整个算法进程组；
-6. 进程结束后立即检查算法注册记录规定的固定输出：sfvision 为 `vo.txt`，vloc 为 `vloc.txt`；
-7. 输出有效时立即进入算法评估模块；
-8. 输出无效时不执行 voeval，将本 Segment 的评估状态记录为未执行；
-9. 无论算法成功还是失败，都保存运行回执、评估状态和现有结果，并更新 `run_summary.xlsx`；
-10. Excel 更新成功后提交当前 Segment 检查点，然后开始下一个有效 Segment。
+6. 进程结束后，在算法契约绑定的固定位置检查输出：sfvision 为 `vo.txt`，vloc 为 `vloc.txt`，并确认文件由本次执行生成或更新；
+7. 输出有效时，将固定输出复制到当前 Segment 的 `result/` 目录；
+8. 复制成功后立即进入算法评估模块，voeval 只读取 `result/` 中的正式副本；
+9. 输出无效时不执行 voeval，将本 Segment 的评估状态记录为未执行；
+10. 无论算法成功还是失败，都保存运行回执、评估状态和现有结果，并更新 `run_summary.xlsx`；
+11. Excel 更新成功后提交当前 Segment 检查点，然后开始下一个有效 Segment。
 
 算法失败处理：
 
@@ -394,12 +378,11 @@ Git 记录规则：
 2. 退出码为 0；
 3. 当前算法对应的固定输出文件存在且非空；
 4. 输出满足算法内置契约规定的固定列数和基础格式；
-5. 输出时间范围与当前 Segment 相容；
-6. 运行回执和输出摘要已经成功保存。
+5. 输出时间范围与当前 Segment 相容。
 
 仅有退出码 0 不能判定运行成功。
 
-固定输出缺失、为空、列数不足或基础格式错误属于算法输出失败，计入算法失败数量。通过这些检查后才进入 voeval；格式合法但 voeval 无法计算指标属于评估失败，不计入算法失败数量。
+固定输出缺失、为空、列数不足或基础格式错误属于算法输出失败，计入算法失败数量。通过这些检查后，Pipeline 将文件复制到当前 Segment 的 `result/`，复制失败属于存储问题，不计入算法失败；复制成功后才进入 voeval。格式合法但 voeval 无法计算指标属于评估失败，也不计入算法失败数量。
 
 #### 3.2 Segment 运行回执
 
@@ -407,13 +390,12 @@ Git 记录规则：
 
 | 信息 | 含义 |
 | --- | --- |
-| `run_id` | 本次完整测试身份 |
+| `test_id` | 本次完整测试身份 |
 | `dataset_id` | 所属数据集 |
 | `segment_id` | 当前独立运行单元 |
-| `generated_script_path` | Pipeline 自动生成的运行脚本路径 |
-| `working_dir_path` | 从 `build.algorithm_path` 派生的本次 run 算法副本目录 |
+| `resolved_entrypoint` | 本次实际使用的算法运行入口 |
+| `working_dir_path` | `build.algorithm_path` |
 | `command` | 实际命令参数列表 |
-| `environment_summary` | 系统实际使用的本地环境摘要 |
 | `started_at`、`finished_at` | 算法开始和结束时间 |
 | `status` | success、failed、timeout 或 interrupted |
 | `exit_code` | 算法退出码 |
@@ -425,40 +407,39 @@ Git 记录规则：
 
 #### 3.3 存储与检查点
 
-一次 run 的结果目录按算法和 run 隔离，建议结构如下：
+一次 run 的结果目录按算法和 `test_id` 隔离。系统为每次 run 生成唯一的 `test_id`，并直接在 `ALGORITHM_ID` 下创建对应的 `TEST_ID` 目录。建议结构如下：
 
 ```text
 results/
 └── algorithms/
     └── ALGORITHM_ID/
-        └── runs/
-            └── RUN_ID/
-                ├── config/
-                ├── git/
-                ├── build_receipt.yaml
-                ├── logs/
-                │   ├── build.stdout.log
-                │   └── build.stderr.log
-                ├── datasets/
-                │   └── DATASET_ID/
-                │       └── segments/
-                │           └── SEGMENT_ID/
-                │               ├── run/
-                │               │   ├── generated_run.sh
-                │               │   ├── receipt.yaml
-                │               │   ├── stdout.log
-                │               │   ├── stderr.log
-                │               │   └── output/
-                │               └── evaluations/
-                │                   └── EVALUATION_ID/
-                │                       ├── metrics.json
-                │                       ├── receipt.yaml
-                │                       └── voeval.log
-                ├── checkpoint.yaml
-                ├── run_summary.xlsx
-                ├── comparisons/
-                └── reports/
-                    └── run_report
+        └── TEST_ID/
+            ├── config/
+            ├── git/
+            ├── build_receipt.yaml
+            ├── logs/
+            │   ├── build.stdout.log
+            │   └── build.stderr.log
+            ├── datasets/
+            │   └── DATASET_ID/
+            │       └── segments/
+            │           └── SEGMENT_ID/
+            │               ├── run/
+            │               │   ├── receipt.yaml
+            │               │   ├── stdout.log
+            │               │   ├── stderr.log
+            │               │   └── result/
+            │               │       └── FIXED_OUTPUT
+            │               └── evaluations/
+            │                   └── EVALUATION_ID/
+            │                       ├── metrics.json
+            │                       ├── receipt.yaml
+            │                       └── voeval.log
+            ├── checkpoint.yaml
+            ├── run_summary.xlsx
+            ├── comparisons/
+            └── reports/
+                └── run_report
 ```
 
 各阶段输出关系如下：
@@ -466,8 +447,8 @@ results/
 | 阶段 | 立即保存的内容 |
 | --- | --- |
 | 配置冻结 | 所选算法标识、算法注册记录及内置契约、数据集类型处理器版本、数据实例配置、全局最小时长、算法失败阈值及其来源和本次参数快照 |
-| Git 与构建 | 代码记录、原始算法仓库路径、源码副本路径、编译脚本、退出码和日志 |
-| Segment 运行 | 自动生成的运行脚本、最终命令、运行回执、环境摘要、日志和算法原始输出 |
+| Git 与构建 | 代码记录、算法仓库路径、编译脚本路径及内容摘要、退出码和日志 |
+| Segment 运行 | 最终命令、运行回执、日志，以及复制到 `result/` 的算法固定输出 |
 | Segment 评估 | voeval 实际命令、日志、指标 JSON、状态和评估回执；默认不生成单项报告 |
 | Segment 结束 | 按 run、数据集和 Segment 身份更新 `run_summary.xlsx`；发生评估时同时记录采用的 evaluation 身份，然后提交 run 检查点 |
 | run 结束 | 完成 Excel 汇总和对比计算，只生成一份整次 run 的默认运行报告 |
@@ -479,7 +460,7 @@ results/
 - 用户请求暂停后，系统不再启动新数据集；当前数据集的全部计划 Segment 完成运行、评估、Excel 更新和检查点提交后再暂停；
 - 检查点同时记录当前数据集、当前 Segment 和 Segment 内部阶段，包括算法输出已保存、评估待完成、Excel 待写或 Segment 已完成；
 - 重启后用户手动执行恢复；
-- 恢复前重新检查 Git、所选算法标识、算法注册记录及内置契约、运行适配器版本、自动生成脚本摘要、数据集类型处理器版本、数据实例配置、全局最小时长、本次 run 冻结的算法失败阈值和 voeval 版本；
+- 恢复前重新检查 Git、所选算法标识及内置契约版本、算法路径、编译脚本路径及内容摘要、数据集类型处理器版本、数据实例配置、全局最小时长、本次 run 冻结的算法失败阈值和 voeval 版本；
 - 所有恢复条件相同才从检查点记录的未完成阶段继续；
 - 算法输出已经成功保存且内容摘要一致时不重新运行算法，只继续评估、Excel 写入或后续 Segment；
 - 已提交完成结果的 Segment 不重复运行，Excel 更新也不能产生重复行；
