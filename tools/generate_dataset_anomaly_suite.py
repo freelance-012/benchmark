@@ -21,6 +21,7 @@ T_imu_body: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]
 cam0:
   T_cam_imu: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]
 """
+VALID_KITTI_PROJECTION = "1 0 0 0 0 1 0 0 0 0 1 0"
 
 
 def parse_args() -> argparse.Namespace:
@@ -63,6 +64,7 @@ def main() -> int:
 
     _generate_rk3399_cases(output, manifest)
     _generate_rk3588_cases(output, manifest)
+    _generate_kitti_cases(output, manifest)
     _generate_instance_cases(output, manifest)
     _generate_config_cases(output, manifest)
     _write_manifest(output, manifest)
@@ -495,6 +497,139 @@ def _generate_rk3588_cases(output: Path, manifest: Dict[str, Any]) -> None:
     }
 
 
+def _generate_kitti_cases(output: Path, manifest: Dict[str, Any]) -> None:
+    group = output / "raw_data_cases" / "kitti"
+    cases: List[Dict[str, Any]] = []
+
+    def add(
+        name: str,
+        *,
+        status: str,
+        diagnostics: Tuple[str, ...] = (),
+        color: bool = False,
+        frame_count: int = 200,
+        note: str = "",
+    ) -> Path:
+        root = group / name
+        _write_kitti_sequence(root, frame_count=frame_count, color=color)
+        cases.append(
+            _case_record(name, status=status, diagnostics=diagnostics, note=note)
+        )
+        return root
+
+    add(
+        "00_valid_grayscale",
+        status="ready",
+        diagnostics=("kitti_ground_truth_missing",),
+    )
+    add(
+        "01_valid_color",
+        status="ready",
+        diagnostics=("kitti_ground_truth_missing",),
+        color=True,
+    )
+    add(
+        "02_short_199_frames",
+        status="unavailable",
+        diagnostics=(
+            "segment_too_short",
+            "no_valid_segment",
+            "kitti_ground_truth_missing",
+        ),
+        frame_count=199,
+    )
+
+    root = add(
+        "10_missing_times_not_discovered",
+        status="ignored",
+        note="KITTI 候选发现依赖 times.txt。",
+    )
+    (root / "times.txt").unlink()
+
+    root = add(
+        "11_missing_calibration", status="invalid", diagnostics=("dataset_invalid",)
+    )
+    (root / "calib.txt").unlink()
+
+    root = add(
+        "12_missing_right_images", status="invalid", diagnostics=("dataset_invalid",)
+    )
+    shutil.rmtree(root / "image_1")
+
+    root = add(
+        "13_empty_left_images", status="invalid", diagnostics=("dataset_invalid",)
+    )
+    for image in (root / "image_0").iterdir():
+        image.unlink()
+
+    root = add(
+        "14_stereo_filename_mismatch",
+        status="invalid",
+        diagnostics=("dataset_invalid",),
+    )
+    (root / "image_1" / "000199.png").rename(root / "image_1" / "000200.png")
+
+    root = add(
+        "15_timestamp_image_count_mismatch",
+        status="invalid",
+        diagnostics=("dataset_invalid",),
+    )
+    timestamps = [index * 0.1 for index in range(199)]
+    (root / "times.txt").write_text(
+        "\n".join(str(value) for value in timestamps) + "\n",
+        encoding="utf-8",
+    )
+
+    root = add(
+        "16_duplicate_timestamp",
+        status="invalid",
+        diagnostics=("dataset_invalid",),
+    )
+    timestamps = [index * 0.1 for index in range(200)]
+    timestamps[-1] = timestamps[-2]
+    (root / "times.txt").write_text(
+        "\n".join(str(value) for value in timestamps) + "\n",
+        encoding="utf-8",
+    )
+
+    root = add(
+        "17_invalid_calibration",
+        status="invalid",
+        diagnostics=("dataset_invalid",),
+    )
+    (root / "calib.txt").write_text(
+        f"P0: {VALID_KITTI_PROJECTION}\n",
+        encoding="utf-8",
+    )
+
+    shared = group / "shared_image_0"
+    shared.mkdir(parents=True)
+    (shared / "000000.png").write_bytes(b"png")
+    root = add(
+        "18_image_directory_symlink_outside",
+        status="invalid",
+        diagnostics=("dataset_invalid",),
+    )
+    shutil.rmtree(root / "image_0")
+    (root / "image_0").symlink_to("../shared_image_0")
+
+    root = add(
+        "19_color_fallback_with_partial_grayscale",
+        status="ready",
+        diagnostics=("kitti_ground_truth_missing",),
+        color=True,
+    )
+    (root / "image_0").mkdir()
+
+    config = output / "configs" / "kitti_raw.yaml"
+    _write_config(config, group, "KITTI")
+    manifest["runs"]["kitti_raw"] = {
+        "config": str(config.relative_to(output)),
+        "refresh": True,
+        "cases": cases,
+    }
+
+
 def _generate_instance_cases(output: Path, manifest: Dict[str, Any]) -> None:
     group = output / "instance_yaml_cases" / "rk3399"
     cases: List[Dict[str, Any]] = []
@@ -646,6 +781,34 @@ def _write_base_dataset(root: Path, dataset_type: str) -> None:
         (root / "bottom_calib_raw.yaml").write_text(VALID_CALIBRATION, encoding="utf-8")
         (root / "front_calib_raw.yaml").write_text(VALID_CALIBRATION, encoding="utf-8")
     (root / "home_point.txt").write_text("121.2 31.1 51.0\n", encoding="utf-8")
+
+
+def _write_kitti_sequence(
+    root: Path,
+    *,
+    frame_count: int,
+    color: bool,
+) -> None:
+    root.mkdir(parents=True)
+    left_name, right_name = ("image_2", "image_3") if color else ("image_0", "image_1")
+    left = root / left_name
+    right = root / right_name
+    left.mkdir()
+    right.mkdir()
+    for index in range(frame_count):
+        filename = f"{index:06d}.png"
+        (left / filename).write_bytes(b"png")
+        (right / filename).write_bytes(b"png")
+    timestamps = [index * 0.1 for index in range(frame_count)]
+    (root / "times.txt").write_text(
+        "\n".join(str(value) for value in timestamps) + "\n",
+        encoding="utf-8",
+    )
+    projection_keys = ("P2", "P3") if color else ("P0", "P1")
+    (root / "calib.txt").write_text(
+        "\n".join(f"{key}: {VALID_KITTI_PROJECTION}" for key in projection_keys) + "\n",
+        encoding="utf-8",
+    )
 
 
 def _write_motion_files(

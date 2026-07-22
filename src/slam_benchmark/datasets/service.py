@@ -98,7 +98,11 @@ class DatasetManager:
         if instance_path.is_file() and not refresh:
             try:
                 instance = self.store.load(instance_path)
-                if self.handler.can_reuse(instance, root):
+                if self.handler.can_reuse(
+                    instance,
+                    root,
+                    self.config.root_path,
+                ):
                     if instance.status == "unavailable":
                         diagnostics.append(
                             ScanDiagnostic(
@@ -119,7 +123,10 @@ class DatasetManager:
                     )
                 )
 
-        instance, registration_diagnostics = self.handler.register(root)
+        instance, registration_diagnostics = self.handler.register(
+            root,
+            self.config.root_path,
+        )
         diagnostics.extend(registration_diagnostics)
         if persist:
             self.store.save(instance_path, instance)

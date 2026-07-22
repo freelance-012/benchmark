@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
 import yaml
 
@@ -228,6 +228,117 @@ class DatasetManagerTests(unittest.TestCase):
         self.assertFalse(report.datasets)
         self.assertIn("do not match", report.diagnostics[0].message)
 
+    def test_kitti_odometry_grayscale_sequence_is_registered(self) -> None:
+        sequence = self.root / "sequences" / "00"
+        timestamps = [index * 0.1 for index in range(200)]
+        _write_kitti_sequence(
+            sequence,
+            timestamps,
+            collection_root=self.root,
+            with_ground_truth=True,
+        )
+
+        report = self._manager("KITTI").scan()
+
+        self.assertFalse(report.has_errors)
+        self.assertEqual(len(report.datasets), 1)
+        instance = report.datasets[0]
+        self.assertEqual(instance.dataset_type, "kitti")
+        self.assertEqual(instance.handler_version, 1)
+        self.assertEqual(instance.valid_segment_count, 1)
+        self.assertEqual(instance.segments[0].frame_count, 200)
+        self.assertAlmostEqual(instance.segments[0].start_timestamp, 0.0)
+        self.assertAlmostEqual(instance.segments[0].end_timestamp, 19.9)
+        self.assertTrue(instance.input_paths["left_image_dir"].endswith("image_0"))
+        self.assertTrue(instance.input_paths["right_image_dir"].endswith("image_1"))
+        self.assertTrue(instance.input_paths["ground_truth_path"].endswith("00.txt"))
+        self.assertNotIn(
+            "vloc_input_missing", [item.code for item in report.diagnostics]
+        )
+        self.assertTrue((sequence / INSTANCE_FILENAME).is_file())
+
+    def test_kitti_odometry_color_sequence_without_ground_truth_is_ready(self) -> None:
+        sequence = self.root / "sequences" / "11"
+        timestamps = [index * 0.1 for index in range(200)]
+        _write_kitti_sequence(sequence, timestamps, color=True)
+
+        report = self._manager("kitti").scan()
+
+        self.assertFalse(report.has_errors)
+        instance = report.datasets[0]
+        self.assertEqual(instance.status, "ready")
+        self.assertTrue(instance.input_paths["left_image_dir"].endswith("image_2"))
+        self.assertTrue(instance.input_paths["right_image_dir"].endswith("image_3"))
+        self.assertIsNone(instance.input_paths["ground_truth_path"])
+        self.assertIn(
+            "kitti_ground_truth_missing", [item.code for item in report.diagnostics]
+        )
+
+    def test_kitti_rejects_incomplete_stereo_pair(self) -> None:
+        sequence = self.root / "sequences" / "00"
+        timestamps = [index * 0.1 for index in range(200)]
+        _write_kitti_sequence(sequence, timestamps)
+        _remove_directory_files(sequence / "image_1")
+        (sequence / "image_1").rmdir()
+
+        report = self._manager("kitti").scan()
+
+        self.assertTrue(report.has_errors)
+        self.assertFalse(report.datasets)
+        self.assertIn("image_0/image_1", report.diagnostics[0].message)
+
+    def test_kitti_rejects_mismatched_stereo_filenames(self) -> None:
+        sequence = self.root / "sequences" / "00"
+        timestamps = [index * 0.1 for index in range(200)]
+        _write_kitti_sequence(sequence, timestamps)
+        (sequence / "image_1" / "000199.png").unlink()
+
+        report = self._manager("kitti").scan()
+
+        self.assertTrue(report.has_errors)
+        self.assertFalse(report.datasets)
+        self.assertIn("filenames do not match", report.diagnostics[0].message)
+
+    def test_kitti_rejects_timestamp_and_image_count_mismatch(self) -> None:
+        sequence = self.root / "sequences" / "00"
+        timestamps = [index * 0.1 for index in range(200)]
+        _write_kitti_sequence(sequence, timestamps)
+        (sequence / "times.txt").write_text(
+            "\n".join(str(value) for value in timestamps[:-1]) + "\n",
+            encoding="utf-8",
+        )
+
+        report = self._manager("kitti").scan()
+
+        self.assertTrue(report.has_errors)
+        self.assertFalse(report.datasets)
+        self.assertIn(
+            "does not match stereo image count", report.diagnostics[0].message
+        )
+
+    def test_kitti_invalid_ground_truth_is_an_optional_warning(self) -> None:
+        sequence = self.root / "sequences" / "00"
+        timestamps = [index * 0.1 for index in range(200)]
+        _write_kitti_sequence(
+            sequence,
+            timestamps,
+            collection_root=self.root,
+            with_ground_truth=True,
+        )
+        (self.root / "poses" / "00.txt").write_text(
+            _kitti_pose_row() + "\n",
+            encoding="utf-8",
+        )
+
+        report = self._manager("kitti").scan()
+
+        self.assertFalse(report.has_errors)
+        self.assertEqual(report.datasets[0].status, "ready")
+        self.assertIsNone(report.datasets[0].input_paths["ground_truth_path"])
+        self.assertIn(
+            "kitti_ground_truth_invalid", [item.code for item in report.diagnostics]
+        )
+
     def test_missing_home_point_is_recorded_as_optional_input_warning(self) -> None:
         dataset = self.root / "flight-sfvision-only"
         timestamps = [float(index) for index in range(202)]
@@ -393,6 +504,53 @@ cam0:
         (root / "front_calib_raw.yaml").write_text(calibration, encoding="utf-8")
     if home_point:
         (root / "home_point.txt").write_text("121.2 31.1 51.0\n", encoding="utf-8")
+
+
+def _write_kitti_sequence(
+    root: Path,
+    timestamps: List[float],
+    *,
+    color: bool = False,
+    collection_root: Optional[Path] = None,
+    with_ground_truth: bool = False,
+) -> None:
+    root.mkdir(parents=True)
+    left_name, right_name = ("image_2", "image_3") if color else ("image_0", "image_1")
+    left = root / left_name
+    right = root / right_name
+    left.mkdir()
+    right.mkdir()
+    for index in range(len(timestamps)):
+        filename = f"{index:06d}.png"
+        (left / filename).write_bytes(b"png")
+        (right / filename).write_bytes(b"png")
+    (root / "times.txt").write_text(
+        "\n".join(str(value) for value in timestamps) + "\n",
+        encoding="utf-8",
+    )
+    projection_keys = ("P2", "P3") if color else ("P0", "P1")
+    (root / "calib.txt").write_text(
+        "\n".join(f"{key}: {_kitti_pose_row()}" for key in projection_keys) + "\n",
+        encoding="utf-8",
+    )
+    if with_ground_truth:
+        if collection_root is None:
+            raise ValueError("collection_root is required with ground truth")
+        poses = collection_root / "poses"
+        poses.mkdir(exist_ok=True)
+        (poses / f"{root.name}.txt").write_text(
+            (_kitti_pose_row() + "\n") * len(timestamps),
+            encoding="utf-8",
+        )
+
+
+def _remove_directory_files(path: Path) -> None:
+    for child in path.iterdir():
+        child.unlink()
+
+
+def _kitti_pose_row() -> str:
+    return "1 0 0 0 0 1 0 0 0 0 1 0"
 
 
 def _imu_row(timestamp: float, flight_mode: int) -> str:

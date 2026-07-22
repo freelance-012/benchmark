@@ -15,9 +15,10 @@ class DatasetSegmentationTests(unittest.TestCase):
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name).resolve()
 
-    def test_existing_types_bind_flight_mode_rule(self) -> None:
+    def test_dataset_types_bind_their_segmentation_rules(self) -> None:
         self.assertEqual(get_contract("rk3399").segmentation_rule, "flight_mode")
         self.assertEqual(get_contract("rk3588").segmentation_rule, "flight_mode")
+        self.assertEqual(get_contract("KITTI").segmentation_rule, "timestamp")
 
     def test_timestamp_rule_accepts_exactly_200_frames_and_10_seconds(self) -> None:
         timestamps = [index * 10.0 / 199 for index in range(200)]

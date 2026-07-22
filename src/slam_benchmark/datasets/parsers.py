@@ -6,7 +6,7 @@ import math
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Sequence
 
 from .errors import ParseError
 
@@ -89,6 +89,22 @@ def parse_image_timestamps(path: Path) -> List[float]:
     return timestamps
 
 
+def parse_kitti_timestamps(path: Path) -> List[float]:
+    rows = _read_numeric_rows(
+        path,
+        1,
+        "KITTI timestamp",
+        allow_extra=False,
+        allow_header=False,
+    )
+    timestamps = [row[0] for row in rows]
+    if any(
+        current <= previous for previous, current in zip(timestamps, timestamps[1:])
+    ):
+        raise ParseError(f"{path}: KITTI timestamps must be strictly increasing")
+    return timestamps
+
+
 def validate_calibration(path: Path) -> None:
     try:
         text = path.read_text(encoding="utf-8", errors="replace")
@@ -103,6 +119,41 @@ def validate_calibration(path: Path) -> None:
         values = [float(token) for token in _NUMBER.findall(match.group(1))]
         if len(values) != 16 or not all(math.isfinite(value) for value in values):
             raise ParseError(f"{path}: matrix {key} must contain 16 finite values")
+
+
+def validate_kitti_calibration(path: Path, projection_keys: Sequence[str]) -> None:
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        raise ParseError(f"cannot read KITTI calibration file {path}: {exc}") from exc
+    for key in projection_keys:
+        match = re.search(
+            rf"^{re.escape(key)}\s*:\s*(.+)$",
+            text,
+            flags=re.MULTILINE,
+        )
+        if not match:
+            raise ParseError(f"{path}: missing KITTI projection matrix {key}")
+        values = [float(token) for token in _NUMBER.findall(match.group(1))]
+        if len(values) != 12 or not all(math.isfinite(value) for value in values):
+            raise ParseError(
+                f"{path}: KITTI projection matrix {key} must contain 12 finite values"
+            )
+
+
+def validate_kitti_poses(path: Path, expected_rows: int) -> None:
+    rows = _read_numeric_rows(
+        path,
+        12,
+        "KITTI pose",
+        allow_extra=False,
+        allow_header=False,
+    )
+    if len(rows) != expected_rows:
+        raise ParseError(
+            f"{path}: KITTI pose count {len(rows)} does not match "
+            f"timestamp count {expected_rows}"
+        )
 
 
 def validate_home_point(path: Path) -> None:
@@ -126,6 +177,7 @@ def _read_numeric_rows(
     *,
     allow_extra: bool,
     ignore_last_line: bool = False,
+    allow_header: bool = True,
 ) -> List[List[float]]:
     try:
         lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
@@ -144,7 +196,7 @@ def _read_numeric_rows(
         try:
             values = [float(token) for token in parse_tokens]
         except ValueError:
-            if not rows:
+            if not rows and allow_header:
                 continue
             raise ParseError(f"{path}: non-numeric {label} data at line {line_no}")
         if len(tokens) < expected_columns:

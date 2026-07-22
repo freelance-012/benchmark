@@ -71,6 +71,17 @@ _CONTRACTS = {
         ),
         segmentation_rule="flight_mode",
     ),
+    "kitti": DatasetContract(
+        type_id="kitti",
+        handler_version=1,
+        required_files=(
+            ("image_timestamps_path", "times.txt"),
+            ("calibration_path", "calib.txt"),
+        ),
+        image_timestamp_roles=("image_timestamps_path",),
+        calibration_roles=("calibration_path",),
+        segmentation_rule="timestamp",
+    ),
 }
 
 

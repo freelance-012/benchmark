@@ -1,21 +1,21 @@
 # SLAM Benchmark
 
-本仓库正在实现一个本地、单用户、CLI 启动的 SLAM 算法基线测试系统。当前代码先完成数据集管理模块，覆盖 RK3399、RK3588 数据集的发现、校验、分段、实例配置保存和查询。
+本仓库正在实现一个本地、单用户、CLI 启动的 SLAM 算法基线测试系统。当前代码先完成数据集管理模块，覆盖 RK3399、RK3588 和 KITTI Odometry 数据集的发现、校验、分段、实例配置保存和查询。
 
 ## 当前范围
 
 已实现：
 
 - 从用户给定的总根目录递归发现数据集；
-- 按 RK3399、RK3588 内置契约定位固定文件；
+- 按 RK3399、RK3588、KITTI Odometry 内置契约定位固定输入；
 - 按 voeval 的固定 21 列顺序校验 `imu.txt`；
-- 由数据集类型契约选择固定分段规则；当前 RK3399、RK3588 使用 `flight_mode` 规则，通用格式可复用时间戳规则；
+- 由数据集类型契约选择固定分段规则；RK3399、RK3588 使用 `flight_mode`，KITTI 使用时间戳首尾范围；
 - 使用所选数据集类型约定的图像时间戳统计每个 Segment 的输入图像帧数；
 - 将同时达到 200 帧和 10 秒的 Segment 标记为有效；
 - 在每个具体数据集根目录原子写入 `benchmark_dataset.yaml`；
 - 查询已录入的数据集和 Segment。
 
-暂未实现 KITTI、EuRoC、算法构建运行、voeval 调用、回归对比和最终报告。这些能力保留在总体设计中，后续按模块接入。
+暂未实现 EuRoC、算法构建运行、KITTI 的 voeval 评估适配、回归对比和最终报告。这些能力保留在总体设计中，后续按模块接入。
 
 ## 项目结构
 
@@ -72,6 +72,14 @@ dataset:
 
 示例见 `configs/dataset.example.yaml`。一次扫描只处理一种数据集类型。
 
+KITTI Odometry 推荐将包含 `sequences/` 和可选 `poses/` 的数据包根目录作为 `root_path`：
+
+```yaml
+dataset:
+  root_path: /path/to/kitti_odometry
+  type: KITTI
+```
+
 ## 内置数据集契约
 
 RK3399 必需文件：
@@ -92,6 +100,14 @@ RK3588 必需文件：
 - `imgts_front.txt`
 - `bottom_calib_raw.yaml`
 - `front_calib_raw.yaml`
+
+KITTI Odometry 每个 `sequences/XX` 序列必须包含：
+
+- `times.txt`
+- `calib.txt`
+- 灰度双目目录 `image_0/`、`image_1/`，或者彩色双目目录 `image_2/`、`image_3/`
+
+KITTI 左右图像文件名必须一致，并从 `000000.png` 连续编号；图像对数量必须与 `times.txt` 完全一致。灰度和彩色目录同时存在时优先使用灰度双目。训练序列的 `poses/XX.txt` 会作为可选真值输入校验并记录；缺少或无效时数据仍可运行，但会给出不能进行真值评估的警告。每个 KITTI 序列使用 `times.txt` 的第一条和最后一条时间戳形成一个 Segment。
 
 RK3588 的前视和下视时间戳必须完全一致。系统同时校验两份文件，但只按一份同步时间戳计数，不把四路视频的帧数相加。加入 200 帧/10 秒有效性规则后，RK3399 契约版本为 2，RK3588 契约版本为 3；旧实例 YAML 会在重新扫描时按新契约重建。
 
@@ -143,6 +159,7 @@ PYTHONPATH=src python3 -m slam_benchmark dataset scan --config configs/dataset.e
 - 遇到 0 时结束，参与读取的记录末尾仍为非 0 时使用最后一条非 0 记录结束；
 - 起点和终点使用有效飞行记录的时间戳；
 - RK3399 使用 `imgts.txt` 计数；RK3588 校验 `imgts_bottom.txt` 和 `imgts_front.txt` 一致后，使用该同步时间戳序列计数；
+- KITTI 使用 `times.txt` 计数，并要求时间戳严格递增且与左右图像对一一对应；
 - 输入图像帧数不少于 200 且持续时间不少于 10 秒时 Segment 有效。
 
 这里的 200 帧/10 秒是运行前的数据集输入检查。算法运行后，voeval 对 `vo.txt` 执行的 reset 分段和输出轨迹过滤仍然独立生效。
@@ -157,7 +174,7 @@ ruff format --check src tests tools
 
 ### 数据集异常识别套件
 
-异常测试数据不保存在仓库中。工具默认在系统临时目录生成 RK3399、RK3588、已有实例 YAML 恢复及非法用户配置案例：
+异常测试数据不保存在仓库中。工具默认在系统临时目录生成 RK3399、RK3588、KITTI、已有实例 YAML 恢复及非法用户配置案例：
 
 ```bash
 python3 tools/generate_dataset_anomaly_suite.py
