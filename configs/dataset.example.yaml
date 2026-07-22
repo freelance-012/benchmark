@@ -1,0 +1,3 @@
+dataset:
+  root_path: /path/to/benchmark_datasets
+  type: RK3399

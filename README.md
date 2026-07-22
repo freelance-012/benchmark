@@ -1,0 +1,168 @@
+# SLAM Benchmark
+
+本仓库正在实现一个本地、单用户、CLI 启动的 SLAM 算法基线测试系统。当前代码先完成数据集管理模块，覆盖 RK3399、RK3588 数据集的发现、校验、分段、实例配置保存和查询。
+
+## 当前范围
+
+已实现：
+
+- 从用户给定的总根目录递归发现数据集；
+- 按 RK3399、RK3588 内置契约定位固定文件；
+- 按 voeval 的固定 21 列顺序校验 `imu.txt`；
+- 由数据集类型契约选择固定分段规则；当前 RK3399、RK3588 使用 `flight_mode` 规则，通用格式可复用时间戳规则；
+- 使用所选数据集类型约定的图像时间戳统计每个 Segment 的输入图像帧数；
+- 将同时达到 200 帧和 10 秒的 Segment 标记为有效；
+- 在每个具体数据集根目录原子写入 `benchmark_dataset.yaml`；
+- 查询已录入的数据集和 Segment。
+
+暂未实现 KITTI、EuRoC、算法构建运行、voeval 调用、回归对比和最终报告。这些能力保留在总体设计中，后续按模块接入。
+
+## 项目结构
+
+```text
+benchmark/
+├── configs/                  # 用户配置示例；本机配置不会提交
+├── docs/                     # 原有需求、调研、HLD、LLD 与文档模板
+├── src/slam_benchmark/       # Pipeline 源码
+│   └── datasets/             # 数据集契约、扫描、分段与存储
+├── tests/                    # 单元测试，不保存生成数据
+├── tools/                    # 可重复生成和验证异常测试数据的工具
+├── pyproject.toml            # Python 包与依赖定义
+└── README.md
+```
+
+文档保持原有目录不变：[`docs/srs/srs.md`](docs/srs/srs.md)、[`docs/research/research.md`](docs/research/research.md)、[`docs/hld/hld.md`](docs/hld/hld.md) 和 [`docs/lld/lld.md`](docs/lld/lld.md)。
+
+## 环境与依赖
+
+- Python 3.8 或更高版本；
+- PyYAML 6.x。
+
+安装开发版本：
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -e .
+```
+
+也可以使用依赖清单：
+
+```bash
+python -m pip install -r requirements.txt
+```
+
+测试使用 Python 标准库 `unittest`，没有额外测试依赖。
+
+需要运行代码风格检查时安装开发依赖：
+
+```bash
+python -m pip install -r requirements-dev.txt
+```
+
+## 用户配置
+
+用户只填写数据集总根目录和本次扫描的数据集类型：
+
+```yaml
+dataset:
+  root_path: /path/to/benchmark_datasets
+  type: RK3399
+```
+
+示例见 `configs/dataset.example.yaml`。一次扫描只处理一种数据集类型。
+
+## 内置数据集契约
+
+RK3399 必需文件：
+
+- `imu.txt`
+- `img.avi`
+- `imgts.txt`
+- `calib_raw.yaml`
+
+RK3588 必需文件：
+
+- `imu.txt`
+- `video_bottom_0.h265`
+- `video_bottom_1.h265`
+- `video_front_0.h265`
+- `video_front_1.h265`
+- `imgts_bottom.txt`
+- `imgts_front.txt`
+- `bottom_calib_raw.yaml`
+- `front_calib_raw.yaml`
+
+RK3588 的前视和下视时间戳必须完全一致。系统同时校验两份文件，但只按一份同步时间戳计数，不把四路视频的帧数相加。加入 200 帧/10 秒有效性规则后，RK3399 契约版本为 2，RK3588 契约版本为 3；旧实例 YAML 会在重新扫描时按新契约重建。
+
+`home_point.txt` 是 VLOC 兼容性输入。缺少或格式错误时，数据集仍可供 SFVision 使用，但不能选择 VLOC。
+
+扫描过程不会修改 IMU、图像、时间戳或标定文件。系统只在扫描识别出的每个具体数据集根目录生成一份 `benchmark_dataset.yaml`，其中保存该数据集的输入路径和 Segment；算法适用性由系统根据输入文件和算法契约判断，不写入数据集配置。
+
+## CLI
+
+首次扫描并保存各数据集实例 YAML：
+
+```bash
+benchmark dataset scan --config configs/dataset.example.yaml
+```
+
+只校验、不写文件：
+
+```bash
+benchmark dataset scan --config configs/dataset.example.yaml --refresh --dry-run
+```
+
+原始数据发生变化后显式重新录入：
+
+```bash
+benchmark dataset scan --config configs/dataset.example.yaml --refresh
+```
+
+查看已录入数据集：
+
+```bash
+benchmark dataset list --config configs/dataset.example.yaml
+```
+
+不安装包时可从仓库根目录运行：
+
+```bash
+PYTHONPATH=src python3 -m slam_benchmark dataset scan --config configs/dataset.example.yaml
+```
+
+## 分段与有效性
+
+- 每个数据集类型在内置契约中绑定一种分段规则；
+- `flight_mode` 规则根据飞行状态产生一个或多个候选 Segment；
+- `timestamp` 规则将第一条到最后一条有效时间戳作为一个候选 Segment；
+- `imu.txt` 第 1 列固定为时间戳，第 4 列固定为 `flight_mode`；
+- `imu.txt`、`imgts_bottom.txt`、`imgts_front.txt` 的最后一行不参与解析；RK3399 的 `imgts.txt` 仍完整读取；
+- `flight_mode` 从 0 进入非 0 时开始 Segment；
+- 连续非 0 状态属于同一个 Segment，即使状态值发生变化；
+- 遇到 0 时结束，参与读取的记录末尾仍为非 0 时使用最后一条非 0 记录结束；
+- 起点和终点使用有效飞行记录的时间戳；
+- RK3399 使用 `imgts.txt` 计数；RK3588 校验 `imgts_bottom.txt` 和 `imgts_front.txt` 一致后，使用该同步时间戳序列计数；
+- 输入图像帧数不少于 200 且持续时间不少于 10 秒时 Segment 有效。
+
+这里的 200 帧/10 秒是运行前的数据集输入检查。算法运行后，voeval 对 `vo.txt` 执行的 reset 分段和输出轨迹过滤仍然独立生效。
+
+## 测试
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src python3 -m unittest discover -s tests -v
+ruff check src tests tools
+ruff format --check src tests tools
+```
+
+### 数据集异常识别套件
+
+异常测试数据不保存在仓库中。工具默认在系统临时目录生成 RK3399、RK3588、已有实例 YAML 恢复及非法用户配置案例：
+
+```bash
+python3 tools/generate_dataset_anomaly_suite.py
+python3 tools/verify_dataset_anomaly_suite.py
+python3 tools/generate_dataset_anomaly_suite.py --clean
+```
+
+测试数据中的视频是最小占位文件，只用于数据集管理校验，不能用于算法运行。生成、验证、清理完成后，源码仓库不会留下测试数据目录。
