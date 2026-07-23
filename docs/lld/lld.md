@@ -408,40 +408,43 @@ Git 记录规则：
 
 #### 3.3 存储与检查点
 
-一次 run 的结果目录按算法和 `test_id` 隔离。系统为每次 run 生成唯一的 `test_id`，并直接在 `ALGORITHM_ID` 下创建对应的 `TEST_ID` 目录。建议结构如下：
+一次 run 的结果目录按算法、commit 和 `test_id` 三层隔离。系统读取算法仓库当前 HEAD 后进入对应的 `COMMIT_ID` 目录，再为本次 run 生成唯一的 `test_id`。同一 commit 重复运行时创建新的 `TEST_ID`，不得覆盖该 commit 的旧结果。建议结构如下：
 
 ```text
 results/
 └── algorithms/
     └── ALGORITHM_ID/
-        └── TEST_ID/
-            ├── config/
-            ├── git/
-            ├── build_receipt.yaml
-            ├── logs/
-            │   ├── build.stdout.log
-            │   └── build.stderr.log
-            ├── datasets/
-            │   └── DATASET_ID/
-            │       └── segments/
-            │           └── SEGMENT_ID/
-            │               ├── run/
-            │               │   ├── receipt.yaml
-            │               │   ├── stdout.log
-            │               │   ├── stderr.log
-            │               │   └── result/
-            │               │       └── FIXED_OUTPUT
-            │               └── evaluations/
-            │                   └── EVALUATION_ID/
-            │                       ├── metrics.json
-            │                       ├── receipt.yaml
-            │                       └── voeval.log
-            ├── checkpoint.yaml
-            ├── run_summary.xlsx
-            ├── comparisons/
-            └── reports/
-                └── run_report
+        └── COMMIT_ID/
+            └── TEST_ID/
+                ├── config/
+                ├── git/
+                ├── build_receipt.yaml
+                ├── logs/
+                │   ├── build.stdout.log
+                │   └── build.stderr.log
+                ├── datasets/
+                │   └── DATASET_ID/
+                │       └── segments/
+                │           └── SEGMENT_ID/
+                │               ├── run/
+                │               │   ├── receipt.yaml
+                │               │   ├── stdout.log
+                │               │   ├── stderr.log
+                │               │   └── result/
+                │               │       └── FIXED_OUTPUT
+                │               └── evaluations/
+                │                   └── EVALUATION_ID/
+                │                       ├── metrics.json
+                │                       ├── receipt.yaml
+                │                       └── voeval.log
+                ├── checkpoint.yaml
+                ├── run_summary.xlsx
+                ├── comparisons/
+                └── reports/
+                    └── run_report
 ```
+
+`COMMIT_ID` 使用 `commit-` 加 commit hash 的可识别前缀，例如 `commit-fad2a8361383`；回执和 Git 记录始终保存完整 hash。若前缀发生冲突，目录名必须扩展到能够唯一识别。dirty 工作区仍归入当前 HEAD 的 commit 目录，但每次运行的修改状态和源码摘要必须保存在各自 `TEST_ID` 中，不能仅凭目录名声称代码完全相同。
 
 各阶段输出关系如下：
 

@@ -1,0 +1,5 @@
+algorithm: algorithm1
+
+build:
+  algorithm_path: /absolute/path/to/algorithm1
+  script_path: /absolute/path/to/algorithm1/build.sh
