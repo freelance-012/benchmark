@@ -1,0 +1,5 @@
+algorithm: orbslam3_mono_inertial_euroc
+
+build:
+  algorithm_path: /absolute/path/to/ORB_SLAM3
+  script_path: /absolute/path/to/ORB_SLAM3/build.sh

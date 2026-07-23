@@ -44,6 +44,16 @@ _CONTRACTS = {
         fixed_output_relative_path=Path("mock_output.txt"),
         supported_dataset_types=("kitti",),
     ),
+    "orbslam3_mono_inertial_euroc": AlgorithmContract(
+        algorithm_id="orbslam3_mono_inertial_euroc",
+        display_name="ORB-SLAM3 Mono-Inertial (EuRoC)",
+        contract_version=1,
+        entrypoint_relative_path=Path(
+            "Examples/Monocular-Inertial/mono_inertial_euroc"
+        ),
+        fixed_output_relative_path=Path("f_vo.txt"),
+        supported_dataset_types=("euroc",),
+    ),
 }
 
 

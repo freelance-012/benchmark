@@ -45,18 +45,22 @@ benchmark/
 - Python 3.8 或更高版本；
 - PyYAML 6.x。
 
-安装开发版本：
+使用系统 Python 安装到当前用户目录，不创建或激活虚拟环境：
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install -e .
+python3 -m pip install --user --break-system-packages -e .
+export PATH="${HOME}/.local/bin:${PATH}"
+benchmark --help
 ```
 
-也可以使用依赖清单：
+`--user` 将 Python 包和 `benchmark` 命令安装在当前用户目录。Ubuntu、Debian
+等启用了外部管理保护的系统需要 `--break-system-packages`；其他系统的 pip
+不支持该参数时可以将它去掉。
+
+只安装运行依赖时使用：
 
 ```bash
-python -m pip install -r requirements.txt
+python3 -m pip install --user --break-system-packages -r requirements.txt
 ```
 
 测试使用 Python 标准库 `unittest`，没有额外测试依赖。
@@ -64,7 +68,7 @@ python -m pip install -r requirements.txt
 需要运行代码风格检查时安装开发依赖：
 
 ```bash
-python -m pip install -r requirements-dev.txt
+python3 -m pip install --user --break-system-packages -r requirements-dev.txt
 ```
 
 ## 数据集配置
@@ -134,7 +138,26 @@ build:
   script_path: /absolute/path/to/algorithm1/build.sh
 ```
 
-示例见 `configs/algorithm.example.yaml`。工作目录固定为 `build.algorithm_path`；运行入口由算法内置契约确定。当前 `algorithm1`、`algorithm2`、`algorithm3` 分别是用于 RK3588、RK3399 和 KITTI 的模拟算法，正式算法后续以相同契约接入。
+通用模拟算法示例见 `configs/algorithm.example.yaml`。工作目录固定为
+`build.algorithm_path`；运行入口由算法内置契约确定。当前
+`algorithm1`、`algorithm2`、`algorithm3` 分别是用于 RK3588、RK3399 和
+KITTI 的模拟算法。
+
+ORB-SLAM3 EuRoC 单目惯性编译使用
+`configs/orbslam3.example.yaml`，将其中两个路径替换为本机 ORB-SLAM3 Git
+仓库根目录和仓库内的 `build.sh`：
+
+```yaml
+algorithm: orbslam3_mono_inertial_euroc
+
+build:
+  algorithm_path: /absolute/path/to/ORB_SLAM3
+  script_path: /absolute/path/to/ORB_SLAM3/build.sh
+```
+
+该契约校验编译产物
+`Examples/Monocular-Inertial/mono_inertial_euroc`。当前接入范围仅为编译；
+EuRoC 数据集扫描和算法运行尚未实现。
 
 ## CLI
 
@@ -186,10 +209,26 @@ results/
 
 脚本退出码为 0 后，系统仍会检查内置运行入口是否存在且可执行。编译生成的未跟踪文件不视为源码变化；HEAD、分支、已跟踪文件、编译脚本或子模块在编译期间发生变化时，构建回执记为失败。
 
-不安装包时可从仓库根目录运行：
+不安装本项目且不使用虚拟环境时，系统 Python 必须已经能够导入 PyYAML：
 
 ```bash
-PYTHONPATH=src python3 -m slam_benchmark dataset scan --config configs/dataset.example.yaml
+python3 -c "import yaml; print(yaml.__version__)"
+```
+
+然后从仓库根目录通过 `PYTHONPATH=src` 运行。例如扫描数据集：
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src \
+  python3 -m slam_benchmark dataset scan \
+  --config configs/dataset.example.yaml
+```
+
+不安装本项目、也不使用虚拟环境时编译 ORB-SLAM3：
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src \
+  python3 -m slam_benchmark build \
+  --config configs/orbslam3.local.yaml
 ```
 
 ## 分段与有效性
