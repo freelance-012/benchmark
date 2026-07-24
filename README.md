@@ -167,6 +167,51 @@ build:
 `Examples/Monocular-Inertial/mono_inertial_euroc`。当前接入范围仅为编译；
 EuRoC 数据集扫描和算法运行尚未实现。
 
+ORB-SLAM3 单目模式运行 RK3399 SF VO 数据使用
+`configs/orbslam3_mono_sf.example.yaml`。构建脚本和 RK3399 输入实现均属于
+ORB-SLAM3 仓库，benchmark 只使用通用算法构建和运行接口：
+
+```yaml
+algorithm: orbslam3_mono_sf
+
+build:
+  algorithm_path: /absolute/path/to/ORB_SLAM3
+  script_path: /absolute/path/to/ORB_SLAM3/local_scripts/build_mono_sf.sh
+```
+
+该契约固定要求 RK3399 的 `imu.txt`、`img.avi`、`imgts.txt` 和
+`calib_raw.yaml`。benchmark 按标准接口直接调用 ORB-SLAM3：
+
+```text
+mono_sf DATASET_ROOT SEGMENT_START SEGMENT_END IMU_PATH IMG_AVI_PATH IMGTS_PATH CALIB_RAW_PATH
+```
+
+`mono_sf` 内部完成以下工作：
+
+- 校验四个 RK3399 输入并从 `calib_raw.yaml` 的 `cam1` 生成临时相机设置；
+- 直接读取原始 `img.avi` 和 `imgts.txt`，按 Segment 起止时间选择帧；
+- 使用下视图像的下半幅进行单目跟踪，IMU 输入仅按接口校验、不参与跟踪；
+- 从算法仓库内部解析 ORB 词典路径并生成固定输出 `vo.txt`。
+
+临时相机设置和内部轨迹文件在运行结束后自动清理，原始数据集不会被修改。
+benchmark 不包含 ORB-SLAM3 专用输入、运行或构建适配器。
+
+`orbslam3_mono_sf` 固定输出 `vo.txt`，每一行必须严格包含 voeval `sf_vo`
+使用的 11 列：
+
+```text
+timestamp num_inliers x y z yaw pitch roll is_keyframe time_cost reset_count
+```
+
+时间戳单位为秒，`yaw/pitch/roll` 单位为度，`time_cost` 单位为毫秒。
+benchmark 会在保存结果前校验列数、数值、时间范围、时间顺序和整数状态列，
+成功后再将 `vo.txt` 与 RK3399 的 `calib_raw.yaml` 一起复制到数字 Segment
+目录。默认开启 ORB Viewer；无界面运行时可在命令前设置：
+
+```bash
+SLAM_BENCHMARK_ORB_VIEWER=0 benchmark run ...
+```
+
 ## CLI
 
 首次扫描并保存各数据集实例 YAML：

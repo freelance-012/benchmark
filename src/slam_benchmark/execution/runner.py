@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import math
 import os
 import signal
 import subprocess
@@ -181,6 +182,9 @@ def validate_fixed_output(
             segment,
             command,
         )
+    elif contract.output_validator == "sf_vo":
+        output_details, error = _validate_sf_vo_output(path, segment)
+        checks.update(output_details)
     else:
         error = f"unsupported output validator: {contract.output_validator}"
     if error is not None:
@@ -282,6 +286,92 @@ def _validate_mock_key_value_output(
     except (KeyError, ValueError):
         return "mock output Segment timestamps are invalid"
     return None
+
+
+def _validate_sf_vo_output(
+    path: Path,
+    segment: Segment,
+) -> Tuple[Dict[str, Any], Optional[str]]:
+    """Validate the fixed 11-column format consumed by voeval sf_vo."""
+
+    details: Dict[str, Any] = {"row_count": 0}
+    previous_timestamp: Optional[float] = None
+    tolerance = max(
+        1e-6,
+        abs(segment.start_timestamp) * 1e-9,
+        abs(segment.end_timestamp) * 1e-9,
+    )
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            for line_number, raw_line in enumerate(handle, start=1):
+                line = raw_line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                fields = line.replace(",", " ").replace(";", " ").split()
+                if len(fields) != 11:
+                    return details, (
+                        f"{path}:{line_number}: sf_vo expects exactly 11 columns; "
+                        f"got {len(fields)}"
+                    )
+                try:
+                    values = [float(field) for field in fields]
+                except ValueError:
+                    return details, (
+                        f"{path}:{line_number}: sf_vo contains a non-numeric value"
+                    )
+                if not all(math.isfinite(value) for value in values):
+                    return details, (
+                        f"{path}:{line_number}: sf_vo contains NaN or infinity"
+                    )
+
+                timestamp = values[0]
+                if timestamp < segment.start_timestamp - tolerance:
+                    return details, (
+                        f"{path}:{line_number}: sf_vo timestamp precedes Segment start"
+                    )
+                if timestamp > segment.end_timestamp + tolerance:
+                    return details, (
+                        f"{path}:{line_number}: sf_vo timestamp exceeds Segment end"
+                    )
+                if (
+                    previous_timestamp is not None
+                    and timestamp <= previous_timestamp
+                ):
+                    return details, (
+                        f"{path}:{line_number}: sf_vo timestamps must be strictly increasing"
+                    )
+                if values[1] < 0:
+                    return details, (
+                        f"{path}:{line_number}: sf_vo num_inliers must not be negative"
+                    )
+                if values[9] < 0:
+                    return details, (
+                        f"{path}:{line_number}: sf_vo time_cost must not be negative"
+                    )
+                if not _is_integer(values[8]) or int(round(values[8])) not in (0, 1):
+                    return details, (
+                        f"{path}:{line_number}: sf_vo is_keyframe must be 0 or 1"
+                    )
+                if not _is_integer(values[10]) or values[10] < 0:
+                    return details, (
+                        f"{path}:{line_number}: sf_vo reset_count must be a non-negative integer"
+                    )
+
+                if details["row_count"] == 0:
+                    details["first_timestamp"] = timestamp
+                details["last_timestamp"] = timestamp
+                details["row_count"] += 1
+                previous_timestamp = timestamp
+    except (OSError, UnicodeDecodeError) as exc:
+        return details, f"cannot read sf_vo output {path}: {exc}"
+
+    if details["row_count"] < 2:
+        return details, f"{path}: sf_vo output contains fewer than two poses"
+    return details, None
+
+
+def _is_integer(value: float) -> bool:
+    return math.isfinite(value) and abs(value - round(value)) <= 1e-9
 
 
 def _process_result(
