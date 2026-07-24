@@ -37,6 +37,23 @@ class BuildService:
             raise BuildError(str(exc)) from exc
         self.store = store or BuildReceiptStore()
 
+    def allocate_result_dir(
+        self,
+        results_root: Path = Path("results"),
+    ) -> Tuple[Path, GitSnapshot]:
+        """Allocate one immutable algorithm/commit/test result directory."""
+
+        algorithm_path, _ = self._validate_paths()
+        git_snapshot = _capture_git_snapshot(algorithm_path)
+        short_commit = _abbreviate_commit(algorithm_path, git_snapshot.commit)
+        commit_root = (
+            Path(results_root).expanduser().resolve()
+            / "algorithms"
+            / self.contract.algorithm_id
+            / f"commit-{short_commit}"
+        )
+        return _allocate_test_directory(commit_root), git_snapshot
+
     def build_auto(
         self,
         results_root: Path = Path("results"),
@@ -48,16 +65,7 @@ class BuildService:
         if timeout_seconds <= 0:
             raise BuildError("build timeout must be greater than zero")
 
-        algorithm_path, _ = self._validate_paths()
-        git_snapshot = _capture_git_snapshot(algorithm_path)
-        short_commit = _abbreviate_commit(algorithm_path, git_snapshot.commit)
-        commit_root = (
-            Path(results_root).expanduser().resolve()
-            / "algorithms"
-            / self.contract.algorithm_id
-            / f"commit-{short_commit}"
-        )
-        result_dir = _allocate_test_directory(commit_root)
+        result_dir, git_snapshot = self.allocate_result_dir(results_root)
         return self.build(
             result_dir,
             timeout_seconds=timeout_seconds,
@@ -158,6 +166,44 @@ class BuildService:
         except RuntimeError as exc:
             raise BuildError(str(exc)) from exc
         return receipt
+
+    def verify_runtime_context(self, receipt: BuildReceipt) -> Path:
+        """Confirm that a successful build still matches the algorithm checkout."""
+
+        if receipt.status != "success":
+            raise BuildError("cannot run an unsuccessful build receipt")
+        if receipt.algorithm_id != self.contract.algorithm_id:
+            raise BuildError("build receipt algorithm does not match configuration")
+        if receipt.contract_version != self.contract.contract_version:
+            raise BuildError("algorithm contract changed after compilation")
+
+        algorithm_path, script_path = self._validate_paths()
+        if receipt.algorithm_path != algorithm_path:
+            raise BuildError("algorithm path changed after compilation")
+        if receipt.script_path != script_path:
+            raise BuildError("build script path changed after compilation")
+        if receipt.script_digest is None:
+            raise BuildError("build receipt does not contain a script digest")
+        if _sha256_file(script_path) != receipt.script_digest:
+            raise BuildError("build script changed after compilation")
+        if receipt.git_after is None:
+            raise BuildError("build receipt does not contain a final Git snapshot")
+
+        current_git = _capture_git_snapshot(algorithm_path)
+        try:
+            _verify_git_stability(receipt.git_after, current_git)
+        except BuildError as exc:
+            raise BuildError(
+                f"algorithm Git context no longer matches the build: {exc}"
+            ) from exc
+
+        entrypoint = _resolve_entrypoint(algorithm_path, self.contract)
+        if (
+            receipt.resolved_entrypoint is None
+            or receipt.resolved_entrypoint != entrypoint
+        ):
+            raise BuildError("compiled entrypoint changed after compilation")
+        return entrypoint
 
     def _validate_paths(self) -> Tuple[Path, Path]:
         algorithm_path = self.config.algorithm_path.expanduser().resolve()

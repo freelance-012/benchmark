@@ -1,6 +1,6 @@
 # SLAM Benchmark
 
-本仓库正在实现一个本地、单用户、CLI 启动的 SLAM 算法基线测试系统。当前代码已完成数据集管理和算法编译模块，覆盖 RK3399、RK3588、KITTI Odometry 数据集，以及可记录 Git 和构建回执的脚本式算法编译。
+本仓库正在实现一个本地、单用户、CLI 启动的 SLAM 算法基线测试系统。当前代码已完成数据集管理、算法编译和算法运行模块，覆盖 RK3399、RK3588、KITTI Odometry 数据集，以及可记录 Git、构建回执、逐 Segment 运行结果和数据集级检查点的串行执行流程。
 
 ## 当前范围
 
@@ -18,9 +18,15 @@
 - 在独立进程组中执行编译脚本，保存标准输出、错误输出和退出码；
 - 校验算法内置契约绑定的编译后运行入口；
 - 记录编译前后 Git 状态，并在 HEAD 或已跟踪源码发生变化时拒绝继续；
-- 原子保存 `build_receipt.yaml`。
+- 原子保存 `build_receipt.yaml`；
+- 根据算法内置契约自动组合数据集路径、Segment 起止时间戳和固定输入路径；
+- 串行运行每个有效 Segment，不生成新的运行脚本，也不通过 shell 解析参数；
+- 校验模拟算法固定输出并复制到当前 Segment 的 `result/`；
+- 保存 Segment 回执、数据集回执、日志、冻结配置和数据集级检查点；
+- 默认跳过问题数据集并继续，也可使用 `--fail-fast` 在第一次失败时退出；
+- 在上下文未变化时，从未完成的数据集恢复运行。
 
-暂未实现 EuRoC、算法运行、KITTI 的 voeval 评估适配、回归对比和最终报告。这些能力保留在总体设计中，后续按模块接入。
+暂未实现 EuRoC、voeval 自动评估、Excel 汇总、回归对比和最终报告。这些能力保留在总体设计中，后续按模块接入。
 
 ## 项目结构
 
@@ -31,7 +37,8 @@ benchmark/
 ├── src/slam_benchmark/       # Pipeline 源码
 │   ├── algorithms/           # 框架维护的算法内置契约
 │   ├── compilation/          # 算法编译、Git 快照、回执与日志
-│   └── datasets/             # 数据集契约、扫描、分段与存储
+│   ├── datasets/             # 数据集契约、扫描、分段与存储
+│   └── execution/            # 命令组合、算法执行、输出校验与恢复
 ├── tests/                    # 单元测试和三个可编译模拟算法
 ├── tools/                    # 可重复生成和验证异常测试数据的工具
 ├── pyproject.toml            # Python 包与依赖定义
@@ -141,7 +148,8 @@ build:
 通用模拟算法示例见 `configs/algorithm.example.yaml`。工作目录固定为
 `build.algorithm_path`；运行入口由算法内置契约确定。当前
 `algorithm1`、`algorithm2`、`algorithm3` 分别是用于 RK3588、RK3399 和
-KITTI 的模拟算法。
+KITTI 的模拟算法；其中 `algorithm1` 模拟 `sf_vo`，`algorithm2` 模拟
+`sf_vloc`，`algorithm3` 暂无 voeval 工作流。正式算法后续以相同契约接入。
 
 ORB-SLAM3 EuRoC 单目惯性编译使用
 `configs/orbslam3.example.yaml`，将其中两个路径替换为本机 ORB-SLAM3 Git
@@ -191,6 +199,53 @@ benchmark dataset list --config configs/dataset.example.yaml
 benchmark build --config /path/to/algorithm.yaml
 ```
 
+编译并运行一个数据集配置中的全部 READY 数据集：
+
+```bash
+benchmark run \
+  --algorithm-config /path/to/algorithm.yaml \
+  --dataset-config /path/to/dataset.yaml
+```
+
+只运行指定数据集目录或子树：
+
+```bash
+benchmark run \
+  --algorithm-config /path/to/algorithm.yaml \
+  --dataset-config /path/to/dataset.yaml \
+  --dataset-path "/path/to/selected/dataset"
+```
+
+默认模式遇到问题数据集时记录失败、跳过该数据集剩余 Segment，并继续下一个数据集。需要人工调试时使用首次失败立即退出模式：
+
+```bash
+benchmark run \
+  --algorithm-config /path/to/algorithm.yaml \
+  --dataset-config /path/to/dataset.yaml \
+  --fail-fast
+```
+
+默认算法失败阈值为 1，可以在本次运行中覆盖：
+
+```bash
+benchmark run \
+  --algorithm-config /path/to/algorithm.yaml \
+  --dataset-config /path/to/dataset.yaml \
+  --failure-threshold 0
+```
+
+`--fail-fast` 不等待失败阈值，第一次数据集或算法运行失败就保存当前事实并返回非零退出码。用户主动按下 `Ctrl+C` 时，两种模式都会停止。
+
+上下文未变化时，可以从结果目录记录的未完成数据集恢复：
+
+```bash
+benchmark run \
+  --algorithm-config /path/to/algorithm.yaml \
+  --dataset-config /path/to/dataset.yaml \
+  --fail-fast \
+  --resume /path/to/results/algorithms/ALGORITHM_ID/COMMIT_ID/TEST_ID
+```
+
 系统读取当前 commit，并在同一 commit 下自动分配下一个 `test_id`。编译产物保留在算法仓库中，默认结果结构为：
 
 ```text
@@ -208,6 +263,41 @@ results/
 需要单独验证存储位置时，仍可使用高级参数 `--result-dir /path/to/build-result` 覆盖自动分配。
 
 脚本退出码为 0 后，系统仍会检查内置运行入口是否存在且可执行。编译生成的未跟踪文件不视为源码变化；HEAD、分支、已跟踪文件、编译脚本或子模块在编译期间发生变化时，构建回执记为失败。
+
+完整运行默认结果结构为：
+
+```text
+results/
+└── algorithms/
+    └── ALGORITHM_ID/
+        └── COMMIT_ID/
+            └── TEST_ID/
+                ├── config/
+                ├── build_receipt.yaml
+                ├── logs/
+                ├── datasets/
+                │   └── DATASET_ID/
+                │       ├── dataset_receipt.yaml
+                │       └── segments/
+                │           └── SEGMENT_ID/
+                │               └── run/
+                │                   ├── receipt.yaml
+                │                   ├── stdout.log
+                │                   ├── stderr.log
+                │                   └── result/
+                │                       ├── FIXED_OUTPUT
+                │                       ├── CALIBRATION_FILE
+                │                       └── home_point.txt
+                └── checkpoint.yaml
+```
+
+运行成功后，系统按数据集契约把 voeval 使用的单份外参复制到
+`result/`：RK3399 使用 `calib_raw.yaml`，RK3588 使用
+`bottom_calib_raw.yaml`。`sf_vo` 不复制 `home_point.txt`；`sf_vloc`
+要求数据集提供有效 `home_point.txt` 并将其复制到 `result/`。
+RK3588 的 `front_calib_raw.yaml` 不进入评估目录。
+
+恢复未完成的数据集时，旧的未完成结果会移动到该数据集的 `previous_attempts/`，不会覆盖历史尝试。
 
 不安装本项目且不使用虚拟环境时，系统 Python 必须已经能够导入 PyYAML：
 
@@ -256,7 +346,7 @@ ruff check src tests tools
 ruff format --check src tests tools
 ```
 
-`tests/fixtures/mock_algorithms/` 中的三个模拟算法会在临时 Git 仓库内编译，不会在源码目录留下构建产物。编译模块测试覆盖成功、非零退出、入口缺失、超时、路径越界、脚本不可执行、HEAD 变化和已跟踪源码变化。
+`tests/fixtures/mock_algorithms/` 中的三个模拟算法会在临时 Git 仓库内编译，不会在源码目录留下构建产物。编译模块测试覆盖成功、非零退出、入口缺失、超时、路径越界、脚本不可执行、HEAD 变化和已跟踪源码变化。运行模块测试覆盖三个数据集类型、带空格路径、固定输入映射、默认跳过、`--fail-fast`、数据集选择、缺失输出、超时和检查点恢复。
 
 ### 数据集异常识别套件
 

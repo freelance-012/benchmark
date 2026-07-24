@@ -13,6 +13,12 @@ from .config import load_build_config, load_dataset_config
 from .datasets.errors import DatasetError
 from .datasets.models import ScanReport
 from .datasets.service import DatasetManager
+from .execution.models import (
+    FAILURE_POLICY_CONTINUE,
+    FAILURE_POLICY_FAIL_FAST,
+    RunRequest,
+)
+from .execution.service import ExecutionError, ExecutionService
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -49,6 +55,53 @@ def build_parser() -> argparse.ArgumentParser:
             "default: allocate under results/algorithms"
         ),
     )
+
+    run = modules.add_parser(
+        "run",
+        help="compile and execute one algorithm on selected datasets",
+    )
+    run.add_argument(
+        "--algorithm-config",
+        required=True,
+        type=Path,
+        help="algorithm build configuration YAML",
+    )
+    run.add_argument(
+        "--dataset-config",
+        required=True,
+        action="append",
+        type=Path,
+        help="dataset collection configuration YAML; may be repeated",
+    )
+    run.add_argument(
+        "--dataset-path",
+        action="append",
+        type=Path,
+        default=[],
+        help="optional dataset directory or subtree to select; may be repeated",
+    )
+    run.add_argument(
+        "--failure-threshold",
+        type=int,
+        default=1,
+        help="overall failure threshold after all datasets; default: 1",
+    )
+    run.add_argument(
+        "--timeout-seconds",
+        type=float,
+        default=30 * 60.0,
+        help="timeout for each Segment algorithm process; default: 1800",
+    )
+    run.add_argument(
+        "--fail-fast",
+        action="store_true",
+        help="stop after the first dataset or algorithm failure",
+    )
+    run.add_argument(
+        "--resume",
+        type=Path,
+        help="resume an incomplete test result directory",
+    )
     return parser
 
 
@@ -59,7 +112,9 @@ def main(argv: Optional[List[str]] = None) -> int:
             return _run_dataset_command(args)
         if args.module == "build":
             return _run_build_command(args)
-    except (DatasetError, BuildError) as exc:
+        if args.module == "run":
+            return _run_execution_command(args)
+    except (DatasetError, BuildError, ExecutionError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
     return 2
@@ -99,6 +154,45 @@ def _run_build_command(args: argparse.Namespace) -> int:
     if receipt.failure_reason:
         print(f"reason: {receipt.failure_reason}", file=sys.stderr)
     return 130 if receipt.status == "interrupted" else 1
+
+
+def _run_execution_command(args: argparse.Namespace) -> int:
+    policy = FAILURE_POLICY_FAIL_FAST if args.fail_fast else FAILURE_POLICY_CONTINUE
+    request = RunRequest(
+        build_config=load_build_config(args.algorithm_config),
+        dataset_configs=tuple(
+            load_dataset_config(path) for path in args.dataset_config
+        ),
+        selected_dataset_paths=tuple(
+            path.expanduser().resolve() for path in args.dataset_path
+        ),
+        failure_policy=policy,
+        failure_threshold=args.failure_threshold,
+        timeout_seconds=args.timeout_seconds,
+    )
+    service = ExecutionService()
+    if args.resume is None:
+        summary = service.start(request)
+    else:
+        summary = service.resume(request, args.resume)
+
+    message = (
+        f"[{summary.status.upper()}] "
+        f"datasets {summary.successful_datasets} success, "
+        f"{summary.failed_datasets} failed, "
+        f"{summary.not_run_datasets} not run; "
+        f"Segments {summary.successful_segments} success, "
+        f"{summary.failed_segments} failed, "
+        f"{summary.not_run_segments} not run; "
+        f"result: {summary.result_root}"
+    )
+    if summary.status == "success":
+        print(message)
+        return 0
+    print(message, file=sys.stderr)
+    if summary.failure_reason:
+        print(f"reason: {summary.failure_reason}", file=sys.stderr)
+    return 130 if summary.status == "interrupted" else 1
 
 
 def _print_report(report: ScanReport) -> None:

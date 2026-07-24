@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Tuple
+from typing import Dict, Optional, Tuple
 
 INSTANCE_FILENAME = "benchmark_dataset.yaml"
 MIN_SEGMENT_FRAMES = 200
@@ -21,6 +21,7 @@ class DatasetContract:
     image_timestamp_roles: Tuple[str, ...]
     calibration_roles: Tuple[str, ...]
     segmentation_rule: str
+    evaluation_calibration_role: Optional[str] = None
 
     def expected_paths(self, root: Path) -> Dict[str, Path]:
         return {
@@ -46,6 +47,7 @@ _CONTRACTS = {
         image_timestamp_roles=("image_timestamps_path",),
         calibration_roles=("calibration_path",),
         segmentation_rule="flight_mode",
+        evaluation_calibration_role="calibration_path",
     ),
     "rk3588": DatasetContract(
         type_id="rk3588",
@@ -70,6 +72,7 @@ _CONTRACTS = {
             "front_calibration_path",
         ),
         segmentation_rule="flight_mode",
+        evaluation_calibration_role="bottom_calibration_path",
     ),
     "kitti": DatasetContract(
         type_id="kitti",

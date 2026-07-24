@@ -39,6 +39,27 @@ class GitSnapshot:
             "submodules": list(self.submodules),
         }
 
+    @classmethod
+    def from_dict(cls, value: Dict[str, Any]) -> "GitSnapshot":
+        try:
+            branch_value = value.get("branch")
+            detached = value["detached"]
+            dirty = value["dirty"]
+            if not isinstance(detached, bool) or not isinstance(dirty, bool):
+                raise ValueError("detached and dirty must be booleans")
+            return cls(
+                commit=str(value["commit"]),
+                branch=None if branch_value is None else str(branch_value),
+                detached=detached,
+                dirty=dirty,
+                tracked_changes=tuple(str(item) for item in value["tracked_changes"]),
+                untracked_paths=tuple(str(item) for item in value["untracked_paths"]),
+                tracked_state_digest=str(value["tracked_state_digest"]),
+                submodules=tuple(str(item) for item in value["submodules"]),
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError("invalid Git snapshot") from exc
+
 
 @dataclass(frozen=True)
 class BuildReceipt:
@@ -58,6 +79,10 @@ class BuildReceipt:
     git_before: Optional[GitSnapshot]
     git_after: Optional[GitSnapshot]
     failure_reason: Optional[str]
+
+    @property
+    def result_root(self) -> Path:
+        return self.stdout_path.parent.parent
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -85,3 +110,55 @@ class BuildReceipt:
             "git_after": None if self.git_after is None else self.git_after.to_dict(),
             "failure_reason": self.failure_reason,
         }
+
+    @classmethod
+    def from_dict(cls, value: Dict[str, Any]) -> "BuildReceipt":
+        try:
+            if int(value["schema_version"]) != BUILD_RECEIPT_SCHEMA_VERSION:
+                raise ValueError("unsupported schema_version")
+            git_before_value = value.get("git_before")
+            git_after_value = value.get("git_after")
+            if git_before_value is not None and not isinstance(git_before_value, dict):
+                raise ValueError("git_before must be a mapping")
+            if git_after_value is not None and not isinstance(git_after_value, dict):
+                raise ValueError("git_after must be a mapping")
+            resolved_entrypoint = value.get("resolved_entrypoint")
+            exit_code = value.get("exit_code")
+            script_digest = value.get("script_digest")
+            failure_reason = value.get("failure_reason")
+            return cls(
+                algorithm_id=str(value["algorithm"]),
+                contract_version=int(value["contract_version"]),
+                status=str(value["status"]),
+                started_at=str(value["started_at"]),
+                finished_at=str(value["finished_at"]),
+                duration_seconds=float(value["duration_seconds"]),
+                exit_code=None if exit_code is None else int(exit_code),
+                algorithm_path=Path(str(value["algorithm_path"]))
+                .expanduser()
+                .resolve(),
+                script_path=Path(str(value["script_path"])).expanduser().resolve(),
+                script_digest=(None if script_digest is None else str(script_digest)),
+                resolved_entrypoint=(
+                    None
+                    if resolved_entrypoint is None
+                    else Path(str(resolved_entrypoint)).expanduser().resolve()
+                ),
+                stdout_path=Path(str(value["stdout_path"])).expanduser().resolve(),
+                stderr_path=Path(str(value["stderr_path"])).expanduser().resolve(),
+                git_before=(
+                    None
+                    if git_before_value is None
+                    else GitSnapshot.from_dict(git_before_value)
+                ),
+                git_after=(
+                    None
+                    if git_after_value is None
+                    else GitSnapshot.from_dict(git_after_value)
+                ),
+                failure_reason=(
+                    None if failure_reason is None else str(failure_reason)
+                ),
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError("invalid build receipt") from exc

@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import tempfile
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 import yaml
 
@@ -13,6 +13,15 @@ from .models import BuildReceipt
 
 
 class BuildReceiptStore:
+    def load(self, path: Path) -> BuildReceipt:
+        try:
+            payload: Any = yaml.safe_load(path.read_text(encoding="utf-8"))
+            if not isinstance(payload, dict):
+                raise ValueError("document root must be a mapping")
+            return BuildReceipt.from_dict(payload)
+        except (OSError, yaml.YAMLError, ValueError) as exc:
+            raise RuntimeError(f"cannot load build receipt {path}: {exc}") from exc
+
     def save(self, path: Path, receipt: BuildReceipt) -> None:
         temporary: Optional[Path] = None
         try:
