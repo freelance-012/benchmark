@@ -21,8 +21,8 @@
 - 原子保存 `build_receipt.yaml`；
 - 根据算法内置契约自动组合数据集路径、Segment 起止时间戳和固定输入路径；
 - 串行运行每个有效 Segment，不生成新的运行脚本，也不通过 shell 解析参数；
-- 校验模拟算法固定输出并复制到当前 Segment 的 `result/`；
-- 保存 Segment 回执、数据集回执、日志、冻结配置和数据集级检查点；
+- 校验模拟算法固定输出并保存到当前数字 Segment 目录；
+- 保存 Segment 回执、日志、冻结配置和数据集级检查点；
 - 默认跳过问题数据集并继续，也可使用 `--fail-fast` 在第一次失败时退出；
 - 在上下文未变化时，从未完成的数据集恢复运行。
 
@@ -127,9 +127,9 @@ KITTI Odometry 每个 `sequences/XX` 序列必须包含：
 
 KITTI 左右图像文件名必须一致，并从 `000000.png` 连续编号；图像对数量必须与 `times.txt` 完全一致。灰度和彩色目录同时存在时优先使用灰度双目。训练序列的 `poses/XX.txt` 会作为可选真值输入校验并记录；缺少或无效时数据仍可运行，但会给出不能进行真值评估的警告。每个 KITTI 序列使用 `times.txt` 的第一条和最后一条时间戳形成一个 Segment。
 
-RK3588 的前视和下视时间戳必须完全一致。系统同时校验两份文件，但只按一份同步时间戳计数，不把四路视频的帧数相加。加入 200 帧/10 秒有效性规则后，RK3399 契约版本为 2，RK3588 契约版本为 3；旧实例 YAML 会在重新扫描时按新契约重建。
+RK3588 的前视和下视时间戳必须完全一致。系统同时校验两份文件，但只按一份同步时间戳计数，不把四路视频的帧数相加。当前 RK3399 数据处理器版本为 3，RK3588 为 4；旧实例 YAML 会在重新扫描时按新契约重建。
 
-`home_point.txt` 是 VLOC 兼容性输入。缺少或格式错误时，数据集仍可供 SFVision 使用，但不能选择 VLOC。
+数据集中的 `home_point.txt` 只作为可选数据记录，不再作为 VLOC 的运行或评估输入。VLOC 必须和轨迹一起输出本次运行自己的 `home_point.txt`。
 
 扫描过程不会修改 IMU、图像、时间戳或标定文件。系统只在扫描识别出的每个具体数据集根目录生成一份 `benchmark_dataset.yaml`，其中保存该数据集的输入路径和 Segment；算法适用性由系统根据输入文件和算法契约判断，不写入数据集配置。
 
@@ -147,9 +147,9 @@ build:
 
 通用模拟算法示例见 `configs/algorithm.example.yaml`。工作目录固定为
 `build.algorithm_path`；运行入口由算法内置契约确定。当前
-`algorithm1`、`algorithm2`、`algorithm3` 分别是用于 RK3588、RK3399 和
-KITTI 的模拟算法；其中 `algorithm1` 模拟 `sf_vo`，`algorithm2` 模拟
-`sf_vloc`，`algorithm3` 暂无 voeval 工作流。正式算法后续以相同契约接入。
+`algorithm1` 是兼容 RK3588 和 RK3399 的 `sf_vo` 模拟算法；
+`algorithm2` 是 RK3399 的 `sf_vloc` 模拟算法；`algorithm3` 是 KITTI
+模拟算法，暂未绑定 voeval 工作流。正式算法后续以相同契约接入。
 
 ORB-SLAM3 EuRoC 单目惯性编译使用
 `configs/orbslam3.example.yaml`，将其中两个路径替换为本机 ORB-SLAM3 Git
@@ -243,21 +243,19 @@ benchmark run \
   --algorithm-config /path/to/algorithm.yaml \
   --dataset-config /path/to/dataset.yaml \
   --fail-fast \
-  --resume /path/to/results/algorithms/ALGORITHM_ID/COMMIT_ID/TEST_ID
+  --resume /path/to/result/ALGORITHM_ID/TEST_ID
 ```
 
-系统读取当前 commit，并在同一 commit 下自动分配下一个 `test_id`。编译产物保留在算法仓库中，默认结果结构为：
+系统读取当前 commit，并在当前算法目录下自动分配下一个 `test_id`。完整 commit 保存在回执和冻结配置中，不作为目录层级。编译产物保留在算法仓库中，默认结果结构为：
 
 ```text
-results/
-└── algorithms/
-    └── ALGORITHM_ID/
-        └── COMMIT_ID/
-            └── TEST_ID/
-                ├── build_receipt.yaml
-                └── logs/
-                    ├── build.stdout.log
-                    └── build.stderr.log
+result/
+└── ALGORITHM_ID/
+    └── TEST_ID/
+        ├── build_receipt.yaml
+        └── logs/
+            ├── build.stdout.log
+            └── build.stderr.log
 ```
 
 需要单独验证存储位置时，仍可使用高级参数 `--result-dir /path/to/build-result` 覆盖自动分配。
@@ -267,37 +265,44 @@ results/
 完整运行默认结果结构为：
 
 ```text
-results/
-└── algorithms/
-    └── ALGORITHM_ID/
-        └── COMMIT_ID/
-            └── TEST_ID/
-                ├── config/
-                ├── build_receipt.yaml
-                ├── logs/
-                ├── datasets/
-                │   └── DATASET_ID/
-                │       ├── dataset_receipt.yaml
-                │       └── segments/
-                │           └── SEGMENT_ID/
-                │               └── run/
-                │                   ├── receipt.yaml
-                │                   ├── stdout.log
-                │                   ├── stderr.log
-                │                   └── result/
-                │                       ├── FIXED_OUTPUT
-                │                       ├── CALIBRATION_FILE
-                │                       └── home_point.txt
-                └── checkpoint.yaml
+result/
+└── ALGORITHM_ID/
+    └── TEST_ID/
+        ├── config/
+        ├── logs/
+        │   ├── build.stdout.log
+        │   └── build.stderr.log
+        ├── build_receipt.yaml
+        ├── checkpoint.yaml
+        └── dataset/
+            ├── 0/
+            │   ├── receipt.yaml
+            │   ├── stdout.log
+            │   ├── stderr.log
+            │   ├── FIXED_OUTPUT
+            │   ├── CALIBRATION_FILE
+            │   ├── home_point.txt          # 仅 sf_vloc
+            │   └── evaluation/
+            │       ├── metrics.json
+            │       ├── receipt.yaml
+            │       └── voeval.log
+            ├── 1/
+            └── ...
 ```
 
+当前运行模块会预先创建 `evaluation/`，但不会伪造评估文件；等 voeval
+评估模块接入后，才会在其中写入真实的 `metrics.json`、`receipt.yaml`
+和 `voeval.log`。
+
 运行成功后，系统按数据集契约把 voeval 使用的单份外参复制到
-`result/`：RK3399 使用 `calib_raw.yaml`，RK3588 使用
-`bottom_calib_raw.yaml`。`sf_vo` 不复制 `home_point.txt`；`sf_vloc`
-要求数据集提供有效 `home_point.txt` 并将其复制到 `result/`。
+当前数字 Segment 目录：RK3399 使用 `calib_raw.yaml`，RK3588 使用
+`bottom_calib_raw.yaml`。`sf_vloc` 的 `vloc.txt` 和 `home_point.txt`
+均由算法产生，不从数据集复制。
 RK3588 的 `front_calib_raw.yaml` 不进入评估目录。
 
-恢复未完成的数据集时，旧的未完成结果会移动到该数据集的 `previous_attempts/`，不会覆盖历史尝试。
+所有有效 Segment 按本次 run 的稳定顺序从 0 开始预先编号；实际启动过的 Segment 创建对应数字目录，因当前数据集失败而跳过的 Segment 保留编号但不创建虚假结果，所以异常运行中可能出现编号空缺。目录层级不再按数据集分组，但每个 `receipt.yaml` 仍记录原始数据集、Segment 和起止时间戳。数据集运行结果集中保存在 `checkpoint.yaml`，不再生成 `dataset_receipt.yaml`。
+
+恢复未完成的数据集时，仅清理该数据集尚未提交检查点的数字 Segment 目录并从该数据集起点重新运行；之前已经提交完成的数据集不重复运行。
 
 不安装本项目且不使用虚拟环境时，系统 Python 必须已经能够导入 PyYAML：
 

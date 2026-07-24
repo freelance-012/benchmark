@@ -15,7 +15,6 @@ from ..algorithms.contracts import AlgorithmContract
 from ..datasets.models import DatasetInstance
 from .models import (
     RUN_CONFIG_SCHEMA_VERSION,
-    DatasetRunReceipt,
     RunCheckpoint,
     RunIssue,
     RunRequest,
@@ -75,6 +74,25 @@ class RunStore:
                     "root_path": str(item.root_path),
                 }
                 for item in instances
+            ],
+            "segment_order": [
+                {
+                    "run_index": run_index,
+                    "dataset_id": instance.dataset_id,
+                    "segment_id": segment.segment_id,
+                    "start_timestamp": segment.start_timestamp,
+                    "end_timestamp": segment.end_timestamp,
+                }
+                for run_index, (instance, segment) in enumerate(
+                    (
+                        (instance, segment)
+                        for instance in instances
+                        for segment in sorted(
+                            (item for item in instance.segments if item.valid),
+                            key=lambda item: item.sequence_no,
+                        )
+                    )
+                )
             ],
             "preflight_issues": [item.to_dict() for item in issues],
         }
@@ -137,33 +155,25 @@ class RunStore:
     def segment_paths(
         self,
         test_root: Path,
-        dataset_id: str,
-        segment_id: str,
+        run_index: int,
     ) -> SegmentPaths:
-        dataset_component = _safe_component(dataset_id, "dataset_id")
-        segment_component = _safe_component(segment_id, "segment_id")
-        run_dir = (
-            test_root
-            / "datasets"
-            / dataset_component
-            / "segments"
-            / segment_component
-            / "run"
-        )
+        if run_index < 0:
+            raise RunStorageError(f"run_index must not be negative: {run_index}")
+        segment_dir = test_root / "dataset" / str(run_index)
+        evaluation_dir = segment_dir / "evaluation"
         try:
-            run_dir.mkdir(parents=True, exist_ok=False)
-            result_dir = run_dir / "result"
-            result_dir.mkdir()
+            segment_dir.mkdir(parents=True, exist_ok=False)
+            evaluation_dir.mkdir()
         except OSError as exc:
             raise RunStorageError(
-                f"cannot create Segment result directory {run_dir}: {exc}"
+                f"cannot create Segment result directory {segment_dir}: {exc}"
             ) from exc
         return SegmentPaths(
-            run_dir=run_dir,
-            receipt_path=run_dir / "receipt.yaml",
-            stdout_path=run_dir / "stdout.log",
-            stderr_path=run_dir / "stderr.log",
-            result_dir=result_dir,
+            segment_dir=segment_dir,
+            receipt_path=segment_dir / "receipt.yaml",
+            stdout_path=segment_dir / "stdout.log",
+            stderr_path=segment_dir / "stderr.log",
+            evaluation_dir=evaluation_dir,
         )
 
     def save_segment_receipt(
@@ -173,16 +183,6 @@ class RunStore:
     ) -> Path:
         self.save_mapping(paths.receipt_path, receipt.to_dict())
         return paths.receipt_path
-
-    def save_dataset_receipt(
-        self,
-        test_root: Path,
-        receipt: DatasetRunReceipt,
-    ) -> Path:
-        dataset_component = _safe_component(receipt.dataset_id, "dataset_id")
-        path = test_root / "datasets" / dataset_component / "dataset_receipt.yaml"
-        self.save_mapping(path, receipt.to_dict())
-        return path
 
     def copy_fixed_output(
         self,
@@ -233,61 +233,30 @@ class RunStore:
                 temporary.unlink(missing_ok=True)
         return destination
 
-    def archive_incomplete_dataset(self, test_root: Path, dataset_id: str) -> None:
-        dataset_component = _safe_component(dataset_id, "dataset_id")
-        dataset_root = test_root / "datasets" / dataset_component
-        movable = [
-            item
-            for item in (
-                dataset_root / "segments",
-                dataset_root / "dataset_receipt.yaml",
-            )
-            if item.exists()
-        ]
-        if not movable:
-            return
-
-        attempts_root = dataset_root / "previous_attempts"
-        try:
-            attempts_root.mkdir(parents=True, exist_ok=True)
-            index = 1
-            while (attempts_root / f"attempt-{index:03d}").exists():
-                index += 1
-            attempt_root = attempts_root / f"attempt-{index:03d}"
-            attempt_root.mkdir()
-            for item in movable:
-                os.replace(item, attempt_root / item.name)
-            self._rewrite_archived_receipt_paths(dataset_root, attempt_root)
-        except OSError as exc:
-            raise RunStorageError(
-                f"cannot archive incomplete dataset {dataset_id}: {exc}"
-            ) from exc
-
-    def _rewrite_archived_receipt_paths(
+    def reset_segment_directories(
         self,
-        original_dataset_root: Path,
-        attempt_root: Path,
+        test_root: Path,
+        run_indexes: Sequence[int],
     ) -> None:
-        archived_segments = attempt_root / "segments"
-        if not archived_segments.is_dir():
-            return
-        original_segments = original_dataset_root / "segments"
-        for receipt_path in archived_segments.rglob("receipt.yaml"):
-            payload = self.load_mapping(receipt_path)
-            changed = False
-            for key in ("stdout_path", "stderr_path", "output_result_path"):
-                raw_value = payload.get(key)
-                if raw_value is None:
-                    continue
-                path = Path(str(raw_value))
-                try:
-                    relative = path.relative_to(original_segments)
-                except ValueError:
-                    continue
-                payload[key] = str(archived_segments / relative)
-                changed = True
-            if changed:
-                self.save_mapping(receipt_path, payload)
+        """Remove only incomplete Segment directories before a safe resume."""
+
+        dataset_root = test_root / "dataset"
+        for run_index in run_indexes:
+            if run_index < 0:
+                raise RunStorageError(f"run_index must not be negative: {run_index}")
+            segment_dir = dataset_root / str(run_index)
+            if not segment_dir.exists():
+                continue
+            if segment_dir.is_symlink() or not segment_dir.is_dir():
+                raise RunStorageError(
+                    f"cannot reset invalid Segment result path: {segment_dir}"
+                )
+            try:
+                shutil.rmtree(segment_dir)
+            except OSError as exc:
+                raise RunStorageError(
+                    f"cannot reset Segment result directory {segment_dir}: {exc}"
+                ) from exc
 
 
 def _safe_component(value: str, label: str) -> str:

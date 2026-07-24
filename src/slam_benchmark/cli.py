@@ -52,7 +52,7 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         help=(
             "optional exact directory for build receipt and logs; "
-            "default: allocate under results/algorithms"
+            "default: allocate under result/ALGORITHM_ID"
         ),
     )
 

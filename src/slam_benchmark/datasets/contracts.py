@@ -24,10 +24,7 @@ class DatasetContract:
     evaluation_calibration_role: Optional[str] = None
 
     def expected_paths(self, root: Path) -> Dict[str, Path]:
-        return {
-            **{role: root / filename for role, filename in self.required_files},
-            "home_point_path": root / "home_point.txt",
-        }
+        return {role: root / filename for role, filename in self.required_files}
 
     @property
     def required_roles(self) -> Tuple[str, ...]:
@@ -37,7 +34,7 @@ class DatasetContract:
 _CONTRACTS = {
     "rk3399": DatasetContract(
         type_id="rk3399",
-        handler_version=2,
+        handler_version=3,
         required_files=(
             ("imu_path", "imu.txt"),
             ("image_path", "img.avi"),
@@ -51,7 +48,7 @@ _CONTRACTS = {
     ),
     "rk3588": DatasetContract(
         type_id="rk3588",
-        handler_version=3,
+        handler_version=4,
         required_files=(
             ("imu_path", "imu.txt"),
             ("bottom_video_0_path", "video_bottom_0.h265"),

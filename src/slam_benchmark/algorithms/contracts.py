@@ -35,12 +35,16 @@ class AlgorithmContract:
     contract_version: int
     entrypoint_relative_path: Path
     fixed_output_relative_path: Path
+    additional_output_relative_paths: Tuple[Path, ...] = ()
     output_validator: str = "not_configured"
     dataset_run_contracts: Tuple[DatasetRunContract, ...] = ()
     evaluation_workflow: Optional[str] = None
     supported_dataset_types: Tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
+        output_paths = self.output_relative_paths
+        if len(set(output_paths)) != len(output_paths):
+            raise ValueError("algorithm output paths must be unique")
         run_dataset_types = tuple(
             item.dataset_type for item in self.dataset_run_contracts
         )
@@ -68,13 +72,21 @@ class AlgorithmContract:
             f"got {dataset_type!r}"
         )
 
+    @property
+    def output_relative_paths(self) -> Tuple[Path, ...]:
+        return (self.fixed_output_relative_path,) + tuple(
+            self.additional_output_relative_paths
+        )
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             "algorithm_id": self.algorithm_id,
             "display_name": self.display_name,
             "contract_version": self.contract_version,
             "entrypoint_relative_path": str(self.entrypoint_relative_path),
-            "fixed_output_relative_path": str(self.fixed_output_relative_path),
+            "fixed_output_relative_paths": [
+                str(item) for item in self.output_relative_paths
+            ],
             "output_validator": self.output_validator,
             "evaluation_workflow": self.evaluation_workflow,
             "supported_dataset_types": list(self.supported_dataset_types),
@@ -87,8 +99,8 @@ class AlgorithmContract:
 _CONTRACTS = {
     "algorithm1": AlgorithmContract(
         algorithm_id="algorithm1",
-        display_name="Mock RK3588 Algorithm",
-        contract_version=3,
+        display_name="Mock SF VO Algorithm",
+        contract_version=5,
         entrypoint_relative_path=Path("build/algorithm1"),
         fixed_output_relative_path=Path("mock_output.txt"),
         output_validator="mock_key_value",
@@ -108,14 +120,24 @@ _CONTRACTS = {
                     "front_calibration_path",
                 ),
             ),
+            DatasetRunContract(
+                dataset_type="rk3399",
+                required_input_roles=(
+                    "imu_path",
+                    "image_path",
+                    "image_timestamps_path",
+                    "calibration_path",
+                ),
+            ),
         ),
     ),
     "algorithm2": AlgorithmContract(
         algorithm_id="algorithm2",
         display_name="Mock RK3399 Algorithm",
-        contract_version=3,
+        contract_version=4,
         entrypoint_relative_path=Path("build/algorithm2"),
         fixed_output_relative_path=Path("mock_output.txt"),
+        additional_output_relative_paths=(Path("home_point.txt"),),
         output_validator="mock_key_value",
         evaluation_workflow=EVALUATION_WORKFLOW_SF_VLOC,
         dataset_run_contracts=(
@@ -133,7 +155,7 @@ _CONTRACTS = {
     "algorithm3": AlgorithmContract(
         algorithm_id="algorithm3",
         display_name="Mock KITTI Algorithm",
-        contract_version=3,
+        contract_version=4,
         entrypoint_relative_path=Path("build/algorithm3"),
         fixed_output_relative_path=Path("mock_output.txt"),
         output_validator="mock_key_value",
@@ -153,7 +175,7 @@ _CONTRACTS = {
     "orbslam3_mono_inertial_euroc": AlgorithmContract(
         algorithm_id="orbslam3_mono_inertial_euroc",
         display_name="ORB-SLAM3 Mono-Inertial (EuRoC)",
-        contract_version=1,
+        contract_version=2,
         entrypoint_relative_path=Path(
             "Examples/Monocular-Inertial/mono_inertial_euroc"
         ),

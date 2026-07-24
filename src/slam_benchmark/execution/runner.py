@@ -113,6 +113,16 @@ def run_process(
                     process.returncode,
                     "algorithm interrupted by user",
                 )
+    except KeyboardInterrupt:
+        if process is not None:
+            _terminate_process_group(process)
+        return _process_result(
+            "interrupted",
+            started_at,
+            started_clock,
+            None if process is None else process.returncode,
+            "algorithm interrupted by user",
+        )
     except OSError as exc:
         raise RunnerError(f"cannot write run logs: {exc}") from exc
 
@@ -180,6 +190,42 @@ def validate_fixed_output(
         checks["sha256"] = _sha256_file(path)
     except OSError as exc:
         return checks, f"cannot hash fixed output {path}: {exc}"
+    checks["format_valid"] = True
+    return checks, None
+
+
+def validate_additional_output(
+    path: Path,
+) -> Tuple[Dict[str, Any], Optional[str]]:
+    """Validate a contract-declared sidecar output without interpreting it."""
+
+    checks: Dict[str, Any] = {
+        "validator": "regular_nonempty_file",
+        "exists": path.exists(),
+        "regular_file": False,
+        "nonempty": False,
+        "format_valid": False,
+        "sha256": None,
+    }
+    if path.is_symlink():
+        return checks, f"generated output must not be a symlink: {path}"
+    if not path.is_file():
+        return checks, f"generated output does not exist: {path}"
+
+    checks["regular_file"] = True
+    try:
+        size = path.stat().st_size
+    except OSError as exc:
+        return checks, f"cannot inspect generated output {path}: {exc}"
+    checks["size_bytes"] = size
+    if size <= 0:
+        return checks, f"generated output is empty: {path}"
+    checks["nonempty"] = True
+
+    try:
+        checks["sha256"] = _sha256_file(path)
+    except OSError as exc:
+        return checks, f"cannot hash generated output {path}: {exc}"
     checks["format_valid"] = True
     return checks, None
 

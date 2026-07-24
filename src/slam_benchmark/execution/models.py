@@ -9,9 +9,9 @@ from typing import Any, Dict, Optional, Tuple
 from ..compilation.models import BuildConfig
 from ..datasets.models import DatasetScanConfig
 
-RUN_RECEIPT_SCHEMA_VERSION = 1
-RUN_CHECKPOINT_SCHEMA_VERSION = 1
-RUN_CONFIG_SCHEMA_VERSION = 1
+RUN_RECEIPT_SCHEMA_VERSION = 2
+RUN_CHECKPOINT_SCHEMA_VERSION = 2
+RUN_CONFIG_SCHEMA_VERSION = 2
 
 FAILURE_POLICY_CONTINUE = "continue"
 FAILURE_POLICY_FAIL_FAST = "fail_fast"
@@ -26,7 +26,7 @@ class RunRequest:
     failure_policy: str = FAILURE_POLICY_CONTINUE
     failure_threshold: int = 1
     timeout_seconds: float = 30 * 60.0
-    results_root: Path = Path("results")
+    results_root: Path = Path("result")
 
 
 @dataclass(frozen=True)
@@ -64,11 +64,11 @@ class ProcessResult:
 
 @dataclass(frozen=True)
 class SegmentPaths:
-    run_dir: Path
+    segment_dir: Path
     receipt_path: Path
     stdout_path: Path
     stderr_path: Path
-    result_dir: Path
+    evaluation_dir: Path
 
 
 @dataclass(frozen=True)
@@ -76,9 +76,12 @@ class SegmentRunReceipt:
     test_id: str
     algorithm_id: str
     contract_version: int
+    run_index: int
     dataset_id: str
     dataset_type: str
     segment_id: str
+    segment_start_timestamp: float
+    segment_end_timestamp: float
     resolved_entrypoint: Path
     working_dir_path: Path
     command: Tuple[str, ...]
@@ -89,8 +92,8 @@ class SegmentRunReceipt:
     exit_code: Optional[int]
     stdout_path: Path
     stderr_path: Path
-    output_source_path: Path
-    output_result_path: Optional[Path]
+    output_source_paths: Tuple[Path, ...]
+    output_result_paths: Tuple[Path, ...]
     output_checks: Dict[str, Any]
     algorithm_failure: bool
     failure_reason: Optional[str]
@@ -101,9 +104,12 @@ class SegmentRunReceipt:
             "test_id": self.test_id,
             "algorithm": self.algorithm_id,
             "contract_version": self.contract_version,
+            "run_index": self.run_index,
             "dataset_id": self.dataset_id,
             "dataset_type": self.dataset_type,
             "segment_id": self.segment_id,
+            "segment_start_timestamp": self.segment_start_timestamp,
+            "segment_end_timestamp": self.segment_end_timestamp,
             "resolved_entrypoint": str(self.resolved_entrypoint),
             "working_dir_path": str(self.working_dir_path),
             "command": list(self.command),
@@ -114,12 +120,8 @@ class SegmentRunReceipt:
             "exit_code": self.exit_code,
             "stdout_path": str(self.stdout_path),
             "stderr_path": str(self.stderr_path),
-            "output_source_path": str(self.output_source_path),
-            "output_result_path": (
-                None
-                if self.output_result_path is None
-                else str(self.output_result_path)
-            ),
+            "output_source_paths": [str(item) for item in self.output_source_paths],
+            "output_result_paths": [str(item) for item in self.output_result_paths],
             "output_checks": dict(self.output_checks),
             "algorithm_failure": self.algorithm_failure,
             "failure_reason": self.failure_reason,
@@ -156,6 +158,34 @@ class DatasetRunReceipt:
             "failure_reason": self.failure_reason,
         }
 
+    @classmethod
+    def from_dict(cls, value: Dict[str, Any]) -> "DatasetRunReceipt":
+        try:
+            failure_reason = value.get("failure_reason")
+            return cls(
+                test_id=str(value["test_id"]),
+                algorithm_id=str(value["algorithm"]),
+                dataset_id=str(value["dataset_id"]),
+                dataset_type=str(value["dataset_type"]),
+                dataset_path=Path(str(value["dataset_path"])).expanduser().resolve(),
+                status=str(value["status"]),
+                successful_segment_ids=tuple(
+                    str(item) for item in value["successful_segment_ids"]
+                ),
+                failed_segment_ids=tuple(
+                    str(item) for item in value["failed_segment_ids"]
+                ),
+                not_run_segment_ids=tuple(
+                    str(item) for item in value["not_run_segment_ids"]
+                ),
+                algorithm_failure_count=int(value["algorithm_failure_count"]),
+                failure_reason=(
+                    None if failure_reason is None else str(failure_reason)
+                ),
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError("invalid dataset run result") from exc
+
 
 @dataclass(frozen=True)
 class RunCheckpoint:
@@ -168,8 +198,8 @@ class RunCheckpoint:
     timeout_seconds: float
     dataset_order: Tuple[str, ...]
     next_dataset_index: int
-    finished_dataset_ids: Tuple[str, ...]
-    dataset_receipt_paths: Tuple[str, ...]
+    next_segment_index: int
+    dataset_results: Tuple[DatasetRunReceipt, ...]
     preflight_issues: Tuple[RunIssue, ...]
     algorithm_failure_count: int
     status: str
@@ -188,8 +218,8 @@ class RunCheckpoint:
             "timeout_seconds": self.timeout_seconds,
             "dataset_order": list(self.dataset_order),
             "next_dataset_index": self.next_dataset_index,
-            "finished_dataset_ids": list(self.finished_dataset_ids),
-            "dataset_receipt_paths": list(self.dataset_receipt_paths),
+            "next_segment_index": self.next_segment_index,
+            "dataset_results": [item.to_dict() for item in self.dataset_results],
             "preflight_issues": [item.to_dict() for item in self.preflight_issues],
             "algorithm_failure_count": self.algorithm_failure_count,
             "status": self.status,
@@ -218,6 +248,14 @@ class RunCheckpoint:
                         dataset_id=(None if dataset_id is None else str(dataset_id)),
                     )
                 )
+            raw_results = value["dataset_results"]
+            if not isinstance(raw_results, list):
+                raise ValueError("dataset_results must be a list")
+            dataset_results = []
+            for item in raw_results:
+                if not isinstance(item, dict):
+                    raise ValueError("dataset result must be a mapping")
+                dataset_results.append(DatasetRunReceipt.from_dict(item))
             failure_reason = value.get("failure_reason")
             return cls(
                 test_id=str(value["test_id"]),
@@ -229,12 +267,8 @@ class RunCheckpoint:
                 timeout_seconds=float(value["timeout_seconds"]),
                 dataset_order=tuple(str(item) for item in value["dataset_order"]),
                 next_dataset_index=int(value["next_dataset_index"]),
-                finished_dataset_ids=tuple(
-                    str(item) for item in value["finished_dataset_ids"]
-                ),
-                dataset_receipt_paths=tuple(
-                    str(item) for item in value["dataset_receipt_paths"]
-                ),
+                next_segment_index=int(value["next_segment_index"]),
+                dataset_results=tuple(dataset_results),
                 preflight_issues=tuple(issues),
                 algorithm_failure_count=int(value["algorithm_failure_count"]),
                 status=str(value["status"]),

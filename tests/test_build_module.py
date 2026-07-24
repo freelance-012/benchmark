@@ -271,25 +271,13 @@ compiler="${CC:-cc}"
         self.assertEqual(errors.getvalue(), "")
         self.assertTrue((result_dir / "build_receipt.yaml").is_file())
 
-    def test_build_cli_allocates_commit_and_incrementing_test_ids(self) -> None:
+    def test_build_cli_allocates_algorithm_and_incrementing_test_ids(self) -> None:
         if shutil.which("cc") is None:
             self.skipTest("a C compiler is required for mock algorithm fixtures")
         algorithm_root = self._copy_git_algorithm("algorithm1")
         config = self._write_config("algorithm1", algorithm_root)
         full_commit = self._git_output(algorithm_root, "rev-parse", "HEAD").strip()
-        short_commit = self._git_output(
-            algorithm_root,
-            "rev-parse",
-            "--short=12",
-            "HEAD",
-        ).strip()
-        commit_root = (
-            self.root
-            / "results"
-            / "algorithms"
-            / "algorithm1"
-            / f"commit-{short_commit}"
-        )
+        algorithm_root_result = self.root / "result" / "algorithm1"
 
         original_cwd = Path.cwd()
         self.addCleanup(os.chdir, original_cwd)
@@ -303,17 +291,19 @@ compiler="${CC:-cc}"
         self.assertEqual(first_exit, 0)
         self.assertEqual(second_exit, 0)
         self.assertEqual(errors.getvalue(), "")
-        for test_id in ("test-001", "test-002"):
-            receipt_path = commit_root / test_id / "build_receipt.yaml"
+        for test_id in ("test-000", "test-001"):
+            receipt_path = algorithm_root_result / test_id / "build_receipt.yaml"
             self.assertTrue(receipt_path.is_file())
             payload = yaml.safe_load(receipt_path.read_text(encoding="utf-8"))
             self.assertEqual(payload["git_before"]["commit"], full_commit)
             self.assertEqual(payload["git_after"]["commit"], full_commit)
         self.assertIn(
-            str(commit_root / "test-001" / "build_receipt.yaml"), output.getvalue()
+            str(algorithm_root_result / "test-000" / "build_receipt.yaml"),
+            output.getvalue(),
         )
         self.assertIn(
-            str(commit_root / "test-002" / "build_receipt.yaml"), output.getvalue()
+            str(algorithm_root_result / "test-001" / "build_receipt.yaml"),
+            output.getvalue(),
         )
 
     def _copy_git_algorithm(self, algorithm_id: str) -> Path:

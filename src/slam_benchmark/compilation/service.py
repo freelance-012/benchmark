@@ -39,28 +39,24 @@ class BuildService:
 
     def allocate_result_dir(
         self,
-        results_root: Path = Path("results"),
+        results_root: Path = Path("result"),
     ) -> Tuple[Path, GitSnapshot]:
-        """Allocate one immutable algorithm/commit/test result directory."""
+        """Allocate one immutable algorithm/test result directory."""
 
         algorithm_path, _ = self._validate_paths()
         git_snapshot = _capture_git_snapshot(algorithm_path)
-        short_commit = _abbreviate_commit(algorithm_path, git_snapshot.commit)
-        commit_root = (
-            Path(results_root).expanduser().resolve()
-            / "algorithms"
-            / self.contract.algorithm_id
-            / f"commit-{short_commit}"
+        algorithm_root = (
+            Path(results_root).expanduser().resolve() / self.contract.algorithm_id
         )
-        return _allocate_test_directory(commit_root), git_snapshot
+        return _allocate_test_directory(algorithm_root), git_snapshot
 
     def build_auto(
         self,
-        results_root: Path = Path("results"),
+        results_root: Path = Path("result"),
         *,
         timeout_seconds: float = DEFAULT_BUILD_TIMEOUT_SECONDS,
     ) -> BuildReceipt:
-        """Allocate ALGORITHM_ID/COMMIT_ID/TEST_ID and build into it."""
+        """Allocate ALGORITHM_ID/TEST_ID and build into it."""
 
         if timeout_seconds <= 0:
             raise BuildError("build timeout must be greater than zero")
@@ -389,22 +385,15 @@ def _verify_git_stability(before: GitSnapshot, after: GitSnapshot) -> None:
         raise BuildError("Git submodule state changed while compilation was running")
 
 
-def _abbreviate_commit(algorithm_path: Path, commit: str) -> str:
-    return _decode_git_text(
-        _run_git(algorithm_path, ("rev-parse", "--short=12", commit)),
-        "abbreviated Git commit",
-    ).strip()
-
-
-def _allocate_test_directory(commit_root: Path) -> Path:
+def _allocate_test_directory(algorithm_root: Path) -> Path:
     try:
-        commit_root.mkdir(parents=True, exist_ok=True)
+        algorithm_root.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
-        raise BuildError(f"cannot create commit result directory: {exc}") from exc
+        raise BuildError(f"cannot create algorithm result directory: {exc}") from exc
 
-    index = 1
+    index = 0
     while True:
-        candidate = commit_root / f"test-{index:03d}"
+        candidate = algorithm_root / f"test-{index:03d}"
         try:
             candidate.mkdir()
             return candidate

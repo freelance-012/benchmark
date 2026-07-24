@@ -43,9 +43,9 @@ build:
 | 算法标识 | 展示名称 | 内置运行规则 | 固定输出 | voeval 工作流 | 当前可运行并评估的数据集类型 |
 | --- | --- | --- | --- | --- | --- |
 | sfvision | SFVision | sfvision 内置规则 | `vo.txt` | `sf_vo` | RK3399、RK3588 |
-| vloc | VLOC | vloc 内置规则 | `vloc.txt` | `sf_vloc` | RK3399、RK3588 |
+| vloc | VLOC | vloc 内置规则 | `vloc.txt`、`home_point.txt` | `sf_vloc` | RK3399、RK3588 |
 
-每条内置运行规则绑定编译后的运行入口、参数映射和固定原始输出位置。Pipeline 根据数据集路径和 Segment 起止时间戳生成最终命令参数，直接执行算法，再把固定输出复制到当前 Segment 的 `result/` 目录。新增算法时增加一条算法注册记录及其内置契约，不修改公共 Pipeline 或已有算法契约。
+每条内置运行规则绑定编译后的运行入口、参数映射和固定原始输出位置。Pipeline 根据数据集路径和 Segment 起止时间戳生成最终命令参数，直接执行算法，再把固定输出保存到当前数字 Segment 目录。新增算法时增加一条算法注册记录及其内置契约，不修改公共 Pipeline 或已有算法契约。
 
 ### 1. 算法编译配置接口
 
@@ -70,7 +70,7 @@ build:
 | 编译后的运行入口 | `algorithm` 对应的内置运行规则 |
 | 数据集路径和 Segment 起止时间戳 | 数据实例及本次选择结果 |
 | 参数映射和固定输出位置 | `algorithm` 对应的算法注册记录 |
-| `result/` 目录 | Pipeline 为当前 Segment 自动创建 |
+| 数字 Segment 目录 | Pipeline 按本次 run 的稳定顺序从 0 开始自动创建 |
 | 超时 | 系统全局默认 |
 | 最终命令 | 运行模块自动生成 |
 
@@ -84,7 +84,7 @@ build:
 | --- | --- |
 | ground truth 或参考数据所在目录 | 当前数据实例 |
 | ground truth、标定和其他参考文件 | 数据集类型内置契约 |
-| 算法估计结果所在目录 | 当前 Segment 的 `result/` 目录 |
+| 算法估计结果所在目录 | 当前数字 Segment 目录 |
 | 算法估计结果文件名 | 算法注册记录中的 `vo.txt` 或 `vloc.txt` |
 | voeval 工作流 | sfvision 自动使用 `sf_vo`，vloc 自动使用 `sf_vloc` |
 | 评估参数、指标和格式 | voeval 固定默认及系统全局设置 |
@@ -149,7 +149,7 @@ dataset:
 | --- | --- | --- |
 | 类型标识 | 当前注册 RK3399、RK3588 和 KITTI Odometry；EuRoC 通过新增类型处理器接入 | 只选择类型 |
 | 默认文件名与输出名 | 类型契约固定输入文件名；RK3399 使用单路 AVI，RK3588 使用四路 H.265，KITTI 使用官方双目 PNG 序列；数据实例配置固定命名为 `benchmark_dataset.yaml` 并保存到具体数据集根目录 | 否 |
-| 必需文件 | RK3399 必须包含 `imu.txt`、`img.avi`、`imgts.txt`、`calib_raw.yaml`；RK3588 必须包含 `imu.txt`、四个 `video_*.h265`、两份时间戳和两份标定；KITTI 序列必须包含 `times.txt`、`calib.txt` 以及完整的 `image_0/image_1` 或 `image_2/image_3` 双目目录；`home_point.txt` 和 KITTI `poses/序列号.txt` 分别是可选评估输入 | 否 |
+| 必需文件 | RK3399 必须包含 `imu.txt`、`img.avi`、`imgts.txt`、`calib_raw.yaml`；RK3588 必须包含 `imu.txt`、四个 `video_*.h265`、两份时间戳和两份标定；KITTI 序列必须包含 `times.txt`、`calib.txt` 以及完整的 `image_0/image_1` 或 `image_2/image_3` 双目目录；KITTI `poses/序列号.txt` 是可选真值输入，数据集中的 `home_point.txt` 不作为 VLOC 输入 | 否 |
 | 处理器读取的信息及用途 | RK3399、RK3588 读取时间戳和飞行状态；KITTI 读取时间戳并核对双目图像编号与数量；标定和可选真值只定位和校验，不转换原始数据 | 否 |
 | 标定文件 | RK3399 校验 `calib_raw.yaml`；RK3588 校验前、下视两份标定；KITTI 根据实际采用的灰度或彩色双目校验 `calib.txt` 中对应的投影矩阵 | 否 |
 | 分段依据 | RK3399、RK3588 使用 `flight_mode` 规则；KITTI 将 `times.txt` 的第一条到最后一条严格递增时间戳作为一个 Segment | 否 |
@@ -332,14 +332,14 @@ Git 记录规则：
 - 当前有效 Segment；
 - 用户选择的算法和数据集；
 - 本次 run 的算法失败阈值，未设置时采用系统默认值 1；
-- 系统分配的当前 Segment `result/` 目录。
+- 系统为当前 Segment 分配的数字目录。
 
 #### 1.2 处理过程
 
 1. 使用 `algorithm` 查询算法注册表，取得运行入口、参数映射、固定输出和数据集允许范围，并检查当前数据集与 voeval 工作流兼容；
 2. 使用第四部分已经确认的算法运行入口，不创建或定位算法副本；
 3. 从当前数据实例 YAML 取得数据集路径和当前 Segment 的起止时间戳；
-4. 为当前 Segment 创建独立的 `result/` 目录；
+4. 在本次 run 的 `dataset/` 下为当前 Segment 创建独立的连续数字目录；
 5. 根据算法内置契约，将运行入口、数据集路径和起止时间戳组合成最终命令参数列表；
 6. 保存实际命令摘要，不生成或保存新的运行脚本。
 
@@ -352,10 +352,10 @@ Git 记录规则：
 3. 保存标准输出、错误输出、开始时间和进程信息；
 4. 可选采集算法进程树的 CPU、内存和耗时；
 5. 运行超时或用户终止时结束整个算法进程组；
-6. 进程结束后，在算法契约绑定的固定位置检查输出：sfvision 为 `vo.txt`，vloc 为 `vloc.txt`，并确认文件由本次执行生成或更新；
-7. 输出有效时，将固定输出复制到当前 Segment 的 `result/` 目录；
-8. 根据数据集类型只选取一份 voeval 使用的外参：RK3399 复制 `calib_raw.yaml`，RK3588 复制 `bottom_calib_raw.yaml`；`sf_vo` 不复制 `home_point.txt`，`sf_vloc` 必须把有效 `home_point.txt` 复制到同一 `result/`；
-9. 算法输出和评估依赖文件复制成功后，将当前 `result/` 作为 voeval 的 `log_dir` 进入评估模块；
+6. 进程结束后，在算法契约绑定的固定位置检查输出：sfvision 为 `vo.txt`，vloc 必须同时包含 `vloc.txt` 和 `home_point.txt`，并确认文件由本次执行生成或更新；
+7. 输出有效时，将全部算法输出保存到当前数字 Segment 目录；
+8. 根据数据集类型只复制一份 voeval 使用的外参：RK3399 使用 `calib_raw.yaml`，RK3588 使用 `bottom_calib_raw.yaml`；不从数据集复制 `home_point.txt`；
+9. 算法输出和外参保存成功后，将当前数字 Segment 目录作为 voeval 的 `log_dir` 进入评估模块；
 10. 输出无效时不执行 voeval，将本 Segment 的评估状态记录为未执行；
 11. 无论算法成功还是失败，都保存运行回执、评估状态和现有结果，并更新 `run_summary.xlsx`；
 12. 当前数据集形成最终状态且 Excel 更新成功后提交数据集检查点，再开始下一个数据集。
@@ -386,7 +386,7 @@ Git 记录规则：
 
 仅有退出码 0 不能判定运行成功。
 
-固定输出缺失、为空、列数不足或基础格式错误属于算法输出失败，计入算法失败数量。通过这些检查后，Pipeline 将固定输出、当前数据集类型对应的单份评估外参和可用的 `home_point.txt` 复制到当前 Segment 的 `result/`。任一必需文件复制失败属于存储问题，不计入算法失败；全部复制成功后才进入 voeval。格式合法但 voeval 无法计算指标属于评估失败，也不计入算法失败数量。
+固定输出缺失、为空、列数不足或基础格式错误属于算法输出失败，计入算法失败数量。VLOC 的 `vloc.txt` 或 `home_point.txt` 任一缺失都属于算法输出失败。通过检查后，Pipeline 将算法输出保存到当前数字 Segment 目录，并只从数据集复制当前类型对应的单份评估外参。外参复制失败属于存储问题，不计入算法失败；全部保存成功后才进入 voeval。格式合法但 voeval 无法计算指标属于评估失败，也不计入算法失败数量。
 
 #### 3.2 Segment 运行回执
 
@@ -395,6 +395,7 @@ Git 记录规则：
 | 信息 | 含义 |
 | --- | --- |
 | `test_id` | 本次完整测试身份 |
+| `run_index` | 当前 Segment 在本次 run 中从 0 开始的连续编号 |
 | `dataset_id` | 所属数据集 |
 | `segment_id` | 当前独立运行单元 |
 | `resolved_entrypoint` | 本次实际使用的算法运行入口 |
@@ -411,45 +412,35 @@ Git 记录规则：
 
 #### 3.3 存储与检查点
 
-一次 run 的结果目录按算法、commit 和 `test_id` 三层隔离。系统读取算法仓库当前 HEAD 后进入对应的 `COMMIT_ID` 目录，再为本次 run 生成唯一的 `test_id`。同一 commit 重复运行时创建新的 `TEST_ID`，不得覆盖该 commit 的旧结果。建议结构如下：
+一次 run 的结果目录按算法和 `test_id` 两层隔离。每个算法独立地从 `test-000` 开始递增，不按 commit 增加目录层级。系统仍读取并保存算法仓库当前 HEAD 的完整 commit；同一算法的任何历史测试都不得被后续测试覆盖。结构如下：
 
 ```text
-results/
-└── algorithms/
-    └── ALGORITHM_ID/
-        └── COMMIT_ID/
-            └── TEST_ID/
-                ├── config/
-                ├── git/
-                ├── build_receipt.yaml
-                ├── logs/
-                │   ├── build.stdout.log
-                │   └── build.stderr.log
-                ├── datasets/
-                │   └── DATASET_ID/
-                │       └── segments/
-                │           └── SEGMENT_ID/
-                │               ├── run/
-                │               │   ├── receipt.yaml
-                │               │   ├── stdout.log
-                │               │   ├── stderr.log
-                │               │   └── result/
-                │               │       ├── FIXED_OUTPUT
-                │               │       ├── CALIBRATION_FILE
-                │               │       └── home_point.txt
-                │               └── evaluations/
-                │                   └── EVALUATION_ID/
-                │                       ├── metrics.json
-                │                       ├── receipt.yaml
-                │                       └── voeval.log
-                ├── checkpoint.yaml
-                ├── run_summary.xlsx
-                ├── comparisons/
-                └── reports/
-                    └── run_report
+result/
+└── ALGORITHM_ID/
+    └── TEST_ID/
+        ├── config/
+        ├── logs/
+        │   ├── build.stdout.log
+        │   └── build.stderr.log
+        ├── build_receipt.yaml
+        ├── checkpoint.yaml
+        └── dataset/
+            ├── 0/
+            │   ├── receipt.yaml
+            │   ├── stdout.log
+            │   ├── stderr.log
+            │   ├── FIXED_OUTPUT
+            │   ├── CALIBRATION_FILE
+            │   ├── home_point.txt          # 仅 sf_vloc
+            │   └── evaluation/
+            │       ├── metrics.json
+            │       ├── receipt.yaml
+            │       └── voeval.log
+            ├── 1/
+            └── ...
 ```
 
-`COMMIT_ID` 使用 `commit-` 加 commit hash 的可识别前缀，例如 `commit-fad2a8361383`；回执和 Git 记录始终保存完整 hash。若前缀发生冲突，目录名必须扩展到能够唯一识别。dirty 工作区仍归入当前 HEAD 的 commit 目录，但每次运行的修改状态和源码摘要必须保存在各自 `TEST_ID` 中，不能仅凭目录名声称代码完全相同。
+`ALGORITHM_ID` 就是算法名称，不拼接 hash。完整 commit、分支、dirty 状态和源码摘要保存在本次 `TEST_ID` 的冻结配置及构建回执中。全部有效 Segment 按稳定顺序从 0 开始预先编号；实际启动的 Segment 创建对应数字目录，被跳过的 Segment 不生成虚假目录，因此失败运行允许出现编号空缺。每份 Segment 回执仍保存原始 `dataset_id`、`segment_id` 和起止时间戳。数据集级运行状态集中写入 `checkpoint.yaml`，不再生成 `dataset_receipt.yaml`。
 
 各阶段输出关系如下：
 
@@ -457,7 +448,7 @@ results/
 | --- | --- |
 | 配置冻结 | 所选算法标识、算法注册记录及内置契约、数据集类型处理器版本、数据实例配置、固定最小输入图像帧规则、失败处理模式、算法失败阈值及其来源和本次参数快照 |
 | Git 与构建 | 代码记录、算法仓库路径、编译脚本路径及内容摘要、退出码和日志 |
-| Segment 运行 | 最终命令、运行回执、日志，以及复制到 `result/` 的算法固定输出和评估使用的单份外参；仅 `sf_vloc` 同时复制必需的 `home_point.txt` |
+| Segment 运行 | 最终命令、运行回执、日志、算法固定输出和评估使用的单份外参；`sf_vloc` 的 `home_point.txt` 与轨迹一起由算法输出 |
 | Segment 评估 | voeval 实际命令、日志、指标 JSON、状态和评估回执；默认不生成单项报告 |
 | Segment 结束 | 按 run、数据集和 Segment 身份更新 `run_summary.xlsx`；发生评估时同时记录采用的 evaluation 身份 |
 | 数据集结束 | 当前数据集的全部计划 Segment 形成最终状态后提交 run 检查点 |
@@ -472,7 +463,7 @@ results/
 - 重启后用户手动执行恢复；
 - 恢复前重新检查 Git、所选算法标识及内置契约版本、算法路径、编译脚本路径及内容摘要、数据集类型处理器版本、数据实例配置、固定最小输入图像帧规则、本次 run 冻结的失败处理模式、算法失败阈值和 voeval 版本；
 - 所有恢复条件相同才从检查点记录的未完成数据集继续；
-- 检查点尚未提交的数据集从第一个有效 Segment 重新运行；该数据集此前产生的未完成结果移动到 `previous_attempts/` 保存，不覆盖历史尝试；
+- 检查点尚未提交的数据集从第一个有效 Segment 重新运行；恢复前只清理该数据集尚未提交的数字 Segment 目录；
 - 已提交完成的数据集不重复运行，Excel 更新也不能产生重复行；
 - 暂停期间保留已有算法结果、评估数据、Excel 和检查点，不生成最终运行报告；
 - 上下文变化时拒绝使用旧检查点，要求创建新 run。
@@ -483,15 +474,15 @@ results/
 
 #### 1.1 触发条件
 
-当前 Segment 的算法运行成功、输出检查通过且固定输出已经复制到 `result/` 后，Pipeline 立即发起 voeval 评估。评估不等待同一数据集或整次 run 的其他 Segment 完成。
+当前 Segment 的算法运行成功、输出检查通过且算法输出与单份外参已经保存到数字 Segment 目录后，Pipeline 立即发起 voeval 评估。评估不等待同一数据集或整次 run 的其他 Segment 完成。
 
 #### 1.2 评估输入组合
 
-1. 从当前 Segment 回执取得已经复制到 `result/` 的算法估计输出；
+1. 从当前 Segment 回执取得已经保存到数字 Segment 目录的算法估计输出；
 2. 从当前数据实例配置取得包含 `imu.txt` 的数据集根目录；
 3. 从 `algorithm` 对应的算法注册记录取得 `sf_vo` 或 `sf_vloc`；
-4. 校验数据集根目录、当前 Segment `result/` 和 Segment 范围；
-5. 直接将数据集根目录作为 voeval 的 `data_dir`，将已经包含算法输出、单份外参和可用 `home_point.txt` 的当前 Segment `result/` 作为 `log_dir`；
+4. 校验数据集根目录、当前数字 Segment 目录和 Segment 范围；
+5. 直接将数据集根目录作为 voeval 的 `data_dir`，将已经包含算法输出和单份外参的当前数字 Segment 目录作为 `log_dir`；VLOC 的 `home_point.txt` 与 `vloc.txt` 均来自本次算法输出；
 6. 按算法固定输出确认 VO 使用 `log_dir/vo.txt`，VLOC 使用 `log_dir/vloc.txt`，不再为评估重复复制这些文件；
 7. 使用 CLI 默认的 `100 m` RPE 间隔调用 voeval；
 8. 保存实际命令、voeval 版本、日志和指标 JSON，不请求生成 HTML 报告。

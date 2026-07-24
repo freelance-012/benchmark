@@ -174,7 +174,7 @@ class DatasetManagerTests(unittest.TestCase):
 
         self.assertFalse(report.has_errors)
         instance = report.datasets[0]
-        self.assertEqual(instance.handler_version, 3)
+        self.assertEqual(instance.handler_version, 4)
         self.assertEqual(
             set(instance.input_paths),
             {
@@ -187,7 +187,6 @@ class DatasetManagerTests(unittest.TestCase):
                 "front_image_timestamps_path",
                 "bottom_calibration_path",
                 "front_calibration_path",
-                "home_point_path",
             },
         )
         self.assertTrue(
@@ -252,9 +251,6 @@ class DatasetManagerTests(unittest.TestCase):
         self.assertTrue(instance.input_paths["left_image_dir"].endswith("image_0"))
         self.assertTrue(instance.input_paths["right_image_dir"].endswith("image_1"))
         self.assertTrue(instance.input_paths["ground_truth_path"].endswith("00.txt"))
-        self.assertNotIn(
-            "vloc_input_missing", [item.code for item in report.diagnostics]
-        )
         self.assertTrue((sequence / INSTANCE_FILENAME).is_file())
 
     def test_kitti_odometry_color_sequence_without_ground_truth_is_ready(self) -> None:
@@ -339,19 +335,8 @@ class DatasetManagerTests(unittest.TestCase):
             "kitti_ground_truth_invalid", [item.code for item in report.diagnostics]
         )
 
-    def test_missing_home_point_is_recorded_as_optional_input_warning(self) -> None:
-        dataset = self.root / "flight-sfvision-only"
-        timestamps = [float(index) for index in range(202)]
-        _write_dataset(dataset, "rk3399", timestamps, [0] + [1] * 200 + [0], timestamps)
-
-        report = self._manager("rk3399").scan()
-
-        self.assertFalse(report.has_errors)
-        self.assertIsNone(report.datasets[0].input_paths["home_point_path"])
-        self.assertIn("vloc_input_missing", [item.code for item in report.diagnostics])
-
-    def test_invalid_home_point_is_recorded_as_optional_input_warning(self) -> None:
-        dataset = self.root / "flight-invalid-home"
+    def test_home_point_is_not_a_dataset_input(self) -> None:
+        dataset = self.root / "flight-home-point-ignored"
         timestamps = [float(index) for index in range(202)]
         _write_dataset(dataset, "rk3399", timestamps, [0] + [1] * 200 + [0], timestamps)
         (dataset / "home_point.txt").write_text("invalid\n", encoding="utf-8")
@@ -359,19 +344,10 @@ class DatasetManagerTests(unittest.TestCase):
         report = self._manager("rk3399").scan()
 
         self.assertFalse(report.has_errors)
-        self.assertIsNone(report.datasets[0].input_paths["home_point_path"])
-        self.assertIn("vloc_input_invalid", [item.code for item in report.diagnostics])
-
-    def test_empty_home_point_is_recorded_as_optional_input_warning(self) -> None:
-        dataset = self.root / "flight-empty-home"
-        timestamps = [float(index) for index in range(202)]
-        _write_dataset(dataset, "rk3399", timestamps, [0] + [1] * 200 + [0], timestamps)
-        (dataset / "home_point.txt").write_text("", encoding="utf-8")
-
-        report = self._manager("rk3399").scan()
-
-        self.assertFalse(report.has_errors)
-        self.assertIsNone(report.datasets[0].input_paths["home_point_path"])
+        self.assertNotIn("home_point_path", report.datasets[0].input_paths)
+        self.assertFalse(
+            any(item.code.startswith("vloc_input_") for item in report.diagnostics)
+        )
 
     def test_symlink_outside_dataset_is_rejected(self) -> None:
         dataset = self.root / "flight-symlink"

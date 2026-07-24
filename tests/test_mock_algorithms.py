@@ -31,6 +31,16 @@ class MockAlgorithmTests(unittest.TestCase):
             ),
         ),
         (
+            "algorithm1",
+            "rk3399",
+            (
+                ("imu_path", "imu.txt", False),
+                ("image_path", "img.avi", False),
+                ("image_timestamps_path", "imgts.txt", False),
+                ("calibration_path", "calib_raw.yaml", False),
+            ),
+        ),
+        (
             "algorithm2",
             "rk3399",
             (
@@ -72,7 +82,9 @@ class MockAlgorithmTests(unittest.TestCase):
         dataset_type: str,
         specs: List[InputSpec],
     ) -> None:
-        algorithm_root = self.root / "algorithm fixtures" / algorithm_id
+        algorithm_root = (
+            self.root / "algorithm fixtures" / f"{algorithm_id}-{dataset_type}"
+        )
         algorithm_root.parent.mkdir(parents=True, exist_ok=True)
         shutil.copytree(FIXTURE_ROOT / algorithm_id, algorithm_root)
 
@@ -90,7 +102,12 @@ class MockAlgorithmTests(unittest.TestCase):
         self.assertTrue(entrypoint.is_file())
         self.assertTrue(os.access(entrypoint, os.X_OK))
 
-        dataset_root = self.root / "datasets" / dataset_type / "dataset with space"
+        dataset_root = (
+            self.root
+            / "datasets"
+            / f"{algorithm_id}-{dataset_type}"
+            / "dataset with space"
+        )
         dataset_root.mkdir(parents=True)
         input_paths: List[Tuple[str, Path]] = []
         for role, relative_path, is_directory in specs:

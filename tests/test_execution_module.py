@@ -66,11 +66,7 @@ class ExecutionModuleTests(unittest.TestCase):
                 self.assertEqual(summary.successful_datasets, 1)
                 self.assertEqual(summary.successful_segments, 1)
                 self.assertEqual(summary.algorithm_failure_count, 0)
-                copied = list(
-                    summary.result_root.glob(
-                        "datasets/*/segments/*/run/result/mock_output.txt"
-                    )
-                )
+                copied = list(summary.result_root.glob("dataset/*/mock_output.txt"))
                 self.assertEqual(len(copied), 1)
                 output = copied[0].read_text(encoding="utf-8")
                 self.assertIn(f"algorithm={algorithm_id}", output)
@@ -81,6 +77,33 @@ class ExecutionModuleTests(unittest.TestCase):
                     (summary.result_root / "config" / "algorithm.yaml").is_file()
                 )
                 self.assertTrue((summary.result_root / "checkpoint.yaml").is_file())
+
+    def test_algorithm1_runs_rk3399_with_vo_contract(self) -> None:
+        algorithm_root = self._copy_git_algorithm("algorithm1")
+        collection, dataset = self._create_collection(
+            "rk3399",
+            "algorithm1-rk3399-dataset",
+        )
+
+        summary = ExecutionService().start(
+            self._request(
+                "algorithm1",
+                algorithm_root,
+                collection,
+                "rk3399",
+            )
+        )
+
+        self.assertEqual(summary.status, "success")
+        self.assertEqual(summary.successful_datasets, 1)
+        self.assertEqual(summary.successful_segments, 1)
+        result_dir = next(summary.result_root.glob("dataset/*"))
+        output = (result_dir / "mock_output.txt").read_text(encoding="utf-8")
+        self.assertIn("algorithm=algorithm1", output)
+        self.assertIn("dataset_type=rk3399", output)
+        self.assertIn(f"dataset_root={dataset}", output)
+        self.assertTrue((result_dir / "calib_raw.yaml").is_file())
+        self.assertFalse((result_dir / "home_point.txt").exists())
 
     def test_default_mode_skips_failed_dataset_and_continues(self) -> None:
         algorithm_root = self._copy_git_algorithm(
@@ -111,7 +134,7 @@ class ExecutionModuleTests(unittest.TestCase):
         self.assertEqual(summary.successful_segments, 1)
         self.assertEqual(summary.failed_segments, 1)
         self.assertEqual(summary.not_run_segments, 1)
-        receipts = self._dataset_receipts(summary.result_root)
+        receipts = self._dataset_results(summary.result_root)
         by_path = {item["dataset_path"]: item for item in receipts}
         self.assertEqual(by_path[str(bad)]["status"], "failed")
         self.assertEqual(len(by_path[str(bad)]["not_run_segment_ids"]), 1)
@@ -119,6 +142,8 @@ class ExecutionModuleTests(unittest.TestCase):
         checkpoint = self._yaml(summary.result_root / "checkpoint.yaml")
         self.assertEqual(checkpoint["failure_policy"], "continue")
         self.assertEqual(checkpoint["next_dataset_index"], 2)
+        self.assertEqual(checkpoint["next_segment_index"], 3)
+        self.assertFalse(any(summary.result_root.rglob("dataset_receipt.yaml")))
 
     def test_multiple_successful_segments_have_isolated_results(self) -> None:
         algorithm_root = self._copy_git_algorithm("algorithm2")
@@ -136,12 +161,58 @@ class ExecutionModuleTests(unittest.TestCase):
 
         self.assertEqual(summary.status, "success")
         self.assertEqual(summary.successful_segments, 2)
-        outputs = sorted(
-            summary.result_root.glob("datasets/*/segments/*/run/result/mock_output.txt")
-        )
+        outputs = sorted(summary.result_root.glob("dataset/*/mock_output.txt"))
         self.assertEqual(len(outputs), 2)
+        self.assertEqual([item.parent.name for item in outputs], ["0", "1"])
         contents = [item.read_text(encoding="utf-8") for item in outputs]
         self.assertEqual(len(set(contents)), 2)
+
+    def test_result_tree_is_flat_and_segment_indexed(self) -> None:
+        algorithm_root = self._copy_git_algorithm("algorithm2")
+        collection = self.root / "result tree datasets"
+        self._create_sf_dataset(
+            collection,
+            "two-segments",
+            "rk3399",
+            multiple_segments=True,
+        )
+
+        summary = ExecutionService().start(
+            self._request("algorithm2", algorithm_root, collection, "rk3399")
+        )
+
+        self.assertEqual(
+            summary.result_root,
+            self.results_root / "algorithm2" / "test-000",
+        )
+        self.assertEqual(
+            {item.name for item in summary.result_root.iterdir()},
+            {
+                "config",
+                "logs",
+                "build_receipt.yaml",
+                "checkpoint.yaml",
+                "dataset",
+            },
+        )
+        segment_root = summary.result_root / "dataset"
+        self.assertEqual(
+            {item.name for item in segment_root.iterdir()},
+            {"0", "1"},
+        )
+        for run_index in (0, 1):
+            segment_dir = segment_root / str(run_index)
+            self.assertTrue((segment_dir / "receipt.yaml").is_file())
+            self.assertTrue((segment_dir / "stdout.log").is_file())
+            self.assertTrue((segment_dir / "stderr.log").is_file())
+            self.assertTrue((segment_dir / "mock_output.txt").is_file())
+            self.assertTrue((segment_dir / "home_point.txt").is_file())
+            self.assertTrue((segment_dir / "calib_raw.yaml").is_file())
+            self.assertTrue((segment_dir / "evaluation").is_dir())
+            receipt = self._yaml(segment_dir / "receipt.yaml")
+            self.assertEqual(receipt["run_index"], run_index)
+        self.assertFalse(any(summary.result_root.rglob("dataset_receipt.yaml")))
+        self.assertFalse(any(summary.result_root.rglob("result")))
 
     def test_successful_run_copies_voeval_log_dir_support_files(self) -> None:
         cases = (
@@ -174,7 +245,9 @@ class ExecutionModuleTests(unittest.TestCase):
                     f"{dataset_type}-evaluation-files",
                 )
                 home_point = dataset / "home_point.txt"
-                home_point.write_text("121.2 31.1 51.0\n", encoding="utf-8")
+                home_point.write_text(
+                    "dataset copy must not be used\n", encoding="utf-8"
+                )
 
                 summary = ExecutionService().start(
                     self._request(
@@ -185,9 +258,7 @@ class ExecutionModuleTests(unittest.TestCase):
                     )
                 )
 
-                result_dir = next(
-                    summary.result_root.glob("datasets/*/segments/*/run/result")
-                )
+                result_dir = next(summary.result_root.glob("dataset/*"))
                 copied_calibration = result_dir / calibration_name
                 copied_home_point = result_dir / "home_point.txt"
                 self.assertEqual(
@@ -196,6 +267,10 @@ class ExecutionModuleTests(unittest.TestCase):
                 )
                 if expects_home_point:
                     self.assertEqual(
+                        copied_home_point.read_text(encoding="utf-8"),
+                        "121.2 31.1 51.0\n",
+                    )
+                    self.assertNotEqual(
                         copied_home_point.read_bytes(),
                         home_point.read_bytes(),
                     )
@@ -203,8 +278,9 @@ class ExecutionModuleTests(unittest.TestCase):
                     self.assertFalse(copied_home_point.exists())
                 if excluded_name is not None:
                     self.assertFalse((result_dir / excluded_name).exists())
+                self.assertTrue((result_dir / "evaluation").is_dir())
 
-    def test_sf_vloc_without_home_point_is_rejected_before_build(self) -> None:
+    def test_sf_vloc_does_not_require_dataset_home_point(self) -> None:
         algorithm_root = self._copy_git_algorithm("algorithm2")
         collection, dataset = self._create_collection(
             "rk3399",
@@ -216,14 +292,40 @@ class ExecutionModuleTests(unittest.TestCase):
             self._request("algorithm2", algorithm_root, collection, "rk3399")
         )
 
-        self.assertEqual(summary.status, "failed")
-        self.assertEqual(summary.not_run_datasets, 1)
-        self.assertFalse((summary.result_root / "build_receipt.yaml").exists())
-        checkpoint = self._yaml(summary.result_root / "checkpoint.yaml")
+        self.assertEqual(summary.status, "success")
+        self.assertEqual(summary.successful_datasets, 1)
         self.assertEqual(
-            checkpoint["preflight_issues"][0]["code"],
-            "missing_vloc_home_point",
+            (summary.result_root / "dataset" / "0" / "home_point.txt").read_text(
+                encoding="utf-8"
+            ),
+            "121.2 31.1 51.0\n",
         )
+
+    def test_sf_vloc_requires_algorithm_home_point_output(self) -> None:
+        algorithm_root = self._copy_git_algorithm(
+            "algorithm2",
+            _return_without_home_point,
+        )
+        collection, _ = self._create_collection(
+            "rk3399",
+            "vloc-missing-output-home-point",
+        )
+
+        summary = ExecutionService().start(
+            self._request(
+                "algorithm2",
+                algorithm_root,
+                collection,
+                "rk3399",
+                failure_threshold=0,
+            )
+        )
+
+        self.assertEqual(summary.status, "failed")
+        self.assertEqual(summary.algorithm_failure_count, 1)
+        receipt = self._yaml(next(summary.result_root.glob("dataset/*/receipt.yaml")))
+        self.assertIn("home_point.txt", receipt["failure_reason"])
+        self.assertFalse(receipt["output_checks"]["home_point.txt"]["accepted"])
 
     def test_fail_fast_stops_before_next_dataset_regardless_of_threshold(self) -> None:
         algorithm_root = self._copy_git_algorithm(
@@ -248,7 +350,7 @@ class ExecutionModuleTests(unittest.TestCase):
         self.assertEqual(summary.failed_datasets, 1)
         self.assertEqual(summary.not_run_datasets, 1)
         self.assertEqual(summary.algorithm_failure_count, 1)
-        self.assertEqual(len(self._dataset_receipts(summary.result_root)), 1)
+        self.assertEqual(len(self._dataset_results(summary.result_root)), 1)
         checkpoint = self._yaml(summary.result_root / "checkpoint.yaml")
         self.assertEqual(checkpoint["failure_policy"], "fail_fast")
         self.assertEqual(checkpoint["next_dataset_index"], 0)
@@ -317,7 +419,7 @@ class ExecutionModuleTests(unittest.TestCase):
         self.assertEqual(summary.status, "failed")
         self.assertIn("exited with code 7", summary.failure_reason or "")
         self.assertTrue((summary.result_root / "build_receipt.yaml").is_file())
-        self.assertFalse((summary.result_root / "datasets").exists())
+        self.assertFalse((summary.result_root / "dataset").exists())
 
     def test_selected_dataset_path_runs_only_selected_dataset(self) -> None:
         algorithm_root = self._copy_git_algorithm("algorithm2")
@@ -336,7 +438,7 @@ class ExecutionModuleTests(unittest.TestCase):
 
         self.assertEqual(summary.status, "success")
         self.assertEqual(summary.total_datasets, 1)
-        receipt = self._dataset_receipts(summary.result_root)[0]
+        receipt = self._dataset_results(summary.result_root)[0]
         self.assertEqual(receipt["dataset_path"], str(selected))
         self.assertNotEqual(receipt["dataset_path"], str(first))
 
@@ -363,14 +465,12 @@ class ExecutionModuleTests(unittest.TestCase):
 
         self.assertEqual(summary.status, "failed")
         self.assertEqual(summary.algorithm_failure_count, 1)
-        receipt_path = next(
-            summary.result_root.glob("datasets/*/segments/*/run/receipt.yaml")
-        )
+        receipt_path = next(summary.result_root.glob("dataset/*/receipt.yaml"))
         receipt = self._yaml(receipt_path)
         self.assertEqual(receipt["status"], "failed")
         self.assertTrue(receipt["algorithm_failure"])
         self.assertIn("does not exist", receipt["failure_reason"])
-        self.assertFalse((receipt_path.parent / "result" / "calib_raw.yaml").exists())
+        self.assertFalse((receipt_path.parent / "calib_raw.yaml").exists())
 
     def test_wrong_fixed_output_content_is_rejected(self) -> None:
         algorithm_root = self._copy_git_algorithm(
@@ -390,10 +490,8 @@ class ExecutionModuleTests(unittest.TestCase):
         )
 
         self.assertEqual(summary.status, "failed")
-        receipt = self._yaml(
-            next(summary.result_root.glob("datasets/*/segments/*/run/receipt.yaml"))
-        )
-        self.assertFalse(receipt["output_checks"]["format_valid"])
+        receipt = self._yaml(next(summary.result_root.glob("dataset/*/receipt.yaml")))
+        self.assertFalse(receipt["output_checks"]["mock_output.txt"]["format_valid"])
         self.assertIn("does not match run inputs", receipt["failure_reason"])
 
     def test_timeout_is_an_algorithm_failure(self) -> None:
@@ -412,9 +510,7 @@ class ExecutionModuleTests(unittest.TestCase):
         )
 
         self.assertEqual(summary.status, "failed")
-        receipt = self._yaml(
-            next(summary.result_root.glob("datasets/*/segments/*/run/receipt.yaml"))
-        )
+        receipt = self._yaml(next(summary.result_root.glob("dataset/*/receipt.yaml")))
         self.assertEqual(receipt["status"], "timeout")
         self.assertIn("exceeded timeout", receipt["failure_reason"])
 
@@ -446,24 +542,19 @@ class ExecutionModuleTests(unittest.TestCase):
         self.assertEqual(resumed.status, "success")
         self.assertEqual(resumed.successful_datasets, 2)
         self.assertEqual(resumed.algorithm_failure_count, 0)
-        attempts = list(
-            resumed.result_root.glob(
-                "datasets/*/previous_attempts/attempt-001/dataset_receipt.yaml"
-            )
+        segment_receipts = sorted(
+            resumed.result_root.glob("dataset/*/receipt.yaml"),
+            key=lambda item: int(item.parent.name),
         )
-        self.assertEqual(len(attempts), 1)
-        archived_receipt = self._yaml(
-            next(
-                resumed.result_root.glob(
-                    "datasets/*/previous_attempts/attempt-001/"
-                    "segments/*/run/receipt.yaml"
-                )
-            )
+        self.assertEqual(len(segment_receipts), 2)
+        self.assertEqual(
+            [self._yaml(item)["status"] for item in segment_receipts],
+            ["success", "success"],
         )
-        self.assertTrue(Path(archived_receipt["stdout_path"]).is_file())
-        self.assertTrue(Path(archived_receipt["stderr_path"]).is_file())
         checkpoint = self._yaml(resumed.result_root / "checkpoint.yaml")
         self.assertEqual(checkpoint["next_dataset_index"], 2)
+        self.assertEqual(checkpoint["next_segment_index"], 2)
+        self.assertEqual(len(checkpoint["dataset_results"]), 2)
 
     def test_tracked_source_change_during_algorithm_run_stops_entire_run(self) -> None:
         algorithm_root = self._copy_git_algorithm(
@@ -482,9 +573,7 @@ class ExecutionModuleTests(unittest.TestCase):
             summary.failure_reason or "",
         )
         self.assertEqual(summary.algorithm_failure_count, 0)
-        self.assertTrue(
-            any(summary.result_root.glob("datasets/*/segments/*/run/receipt.yaml"))
-        )
+        self.assertTrue(any(summary.result_root.glob("dataset/*/receipt.yaml")))
 
     def test_cli_run_builds_and_executes_without_user_run_yaml(self) -> None:
         algorithm_root = self._copy_git_algorithm("algorithm2")
@@ -540,11 +629,7 @@ class ExecutionModuleTests(unittest.TestCase):
         self.assertEqual(errors.getvalue(), "")
         self.assertEqual(
             len(
-                list(
-                    (self.root / "results").glob(
-                        "algorithms/algorithm2/commit-*/test-001/checkpoint.yaml"
-                    )
-                )
+                list((self.root / "result").glob("algorithm2/test-000/checkpoint.yaml"))
             ),
             1,
         )
@@ -664,9 +749,8 @@ class ExecutionModuleTests(unittest.TestCase):
             deadline = time.monotonic() + 10
             while time.monotonic() < deadline:
                 if list(
-                    (self.root / "results").glob(
-                        "algorithms/algorithm2/commit-*/test-001/"
-                        "datasets/*/segments/*/run/stdout.log"
+                    (self.root / "result").glob(
+                        "algorithm2/test-000/dataset/*/stdout.log"
                     )
                 ):
                     break
@@ -688,13 +772,12 @@ class ExecutionModuleTests(unittest.TestCase):
         self.assertEqual(stdout, "")
         self.assertIn("[INTERRUPTED]", stderr)
         checkpoint_path = next(
-            (self.root / "results").glob(
-                "algorithms/algorithm2/commit-*/test-001/checkpoint.yaml"
-            )
+            (self.root / "result").glob("algorithm2/test-000/checkpoint.yaml")
         )
         checkpoint = self._yaml(checkpoint_path)
         self.assertEqual(checkpoint["status"], "interrupted")
         self.assertEqual(checkpoint["next_dataset_index"], 0)
+        self.assertEqual(checkpoint["next_segment_index"], 0)
 
     def _copy_git_algorithm(
         self,
@@ -807,11 +890,9 @@ class ExecutionModuleTests(unittest.TestCase):
     def _yaml(path: Path):
         return yaml.safe_load(path.read_text(encoding="utf-8"))
 
-    def _dataset_receipts(self, result_root: Path):
-        return [
-            self._yaml(path)
-            for path in sorted(result_root.glob("datasets/*/dataset_receipt.yaml"))
-        ]
+    def _dataset_results(self, result_root: Path):
+        checkpoint = self._yaml(result_root / "checkpoint.yaml")
+        return checkpoint["dataset_results"]
 
 
 def _fail_for_bad_dataset(source: str) -> str:
@@ -835,6 +916,10 @@ def _return_without_output(source: str) -> str:
         '    FILE *output = fopen(OUTPUT_FILENAME, "w");',
         ('    return 0;\n\n    FILE *output = fopen(OUTPUT_FILENAME, "w");'),
     )
+
+
+def _return_without_home_point(source: str) -> str:
+    return source.replace("    if (ok) {\n", "    if (0) {\n", 1)
 
 
 def _sleep_before_output(source: str) -> str:

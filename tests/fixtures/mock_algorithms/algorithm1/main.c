@@ -20,7 +20,7 @@ static int emit(FILE *output, const char *key, const char *value) {
 }
 
 int main(int argc, char **argv) {
-    static const char *roles[] = {
+    static const char *rk3588_roles[] = {
         "imu_path",
         "bottom_video_0_path",
         "bottom_video_1_path",
@@ -31,12 +31,30 @@ int main(int argc, char **argv) {
         "bottom_calibration_path",
         "front_calibration_path",
     };
-    const int role_count = (int)(sizeof(roles) / sizeof(roles[0]));
+    static const char *rk3399_roles[] = {
+        "imu_path",
+        "image_path",
+        "image_timestamps_path",
+        "calibration_path",
+    };
+    const int rk3588_role_count = (int)(sizeof(rk3588_roles) / sizeof(rk3588_roles[0]));
+    const int rk3399_role_count = (int)(sizeof(rk3399_roles) / sizeof(rk3399_roles[0]));
+    const char **roles = NULL;
+    const char *dataset_type = NULL;
+    int role_count = 0;
     double start = 0.0;
     double end = 0.0;
 
-    if (argc != 4 + role_count) {
-        fprintf(stderr, "algorithm1 expects dataset root, start, end and %d inputs\n", role_count);
+    if (argc == 4 + rk3588_role_count) {
+        roles = rk3588_roles;
+        dataset_type = "rk3588";
+        role_count = rk3588_role_count;
+    } else if (argc == 4 + rk3399_role_count) {
+        roles = rk3399_roles;
+        dataset_type = "rk3399";
+        role_count = rk3399_role_count;
+    } else {
+        fprintf(stderr, "algorithm1 expects 4 RK3399 inputs or 9 RK3588 inputs\n");
         return 2;
     }
     if (!parse_number(argv[2], &start) || !parse_number(argv[3], &end) || end < start) {
@@ -51,7 +69,7 @@ int main(int argc, char **argv) {
     }
 
     int ok = emit(output, "algorithm", "algorithm1") &&
-             emit(output, "dataset_type", "rk3588") &&
+             emit(output, "dataset_type", dataset_type) &&
              emit(output, "dataset_root", argv[1]) &&
              emit(output, "segment_start", argv[2]) &&
              emit(output, "segment_end", argv[3]);

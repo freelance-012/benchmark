@@ -16,7 +16,6 @@ from .parsers import (
     parse_imu_states,
     parse_kitti_timestamps,
     validate_calibration,
-    validate_home_point,
     validate_kitti_calibration,
     validate_kitti_poses,
 )
@@ -80,20 +79,13 @@ class SfDatasetHandler(DatasetHandler):
             image_timestamps,
             imu_records,
         )
-        home_path, home_diagnostics = _resolve_home_point(
-            root, expected["home_point_path"]
-        )
-        diagnostics.extend(home_diagnostics)
 
         instance = DatasetInstance(
             dataset_id=dataset_id,
             dataset_type=self.contract.type_id,
             root_path=root,
             handler_version=self.contract.handler_version,
-            input_paths={
-                **{role: str(path) for role, path in inputs.items()},
-                "home_point_path": None if home_path is None else str(home_path),
-            },
+            input_paths={role: str(path) for role, path in inputs.items()},
             segments=tuple(segments),
         )
         return instance, diagnostics
@@ -113,7 +105,7 @@ class SfDatasetHandler(DatasetHandler):
         ):
             return False
 
-        expected_roles = set(self.contract.required_roles) | {"home_point_path"}
+        expected_roles = set(self.contract.required_roles)
         if set(instance.input_paths) != expected_roles:
             return False
         expected = self.contract.expected_paths(root)
@@ -121,9 +113,6 @@ class SfDatasetHandler(DatasetHandler):
             path = resolve_dataset_file(expected[role], root, role)
             if instance.input_paths.get(role) != str(path):
                 return False
-        home = instance.input_paths.get("home_point_path")
-        if home is not None:
-            resolve_dataset_file(Path(home), root, "home_point_path")
         return segments_are_current(instance.dataset_id, instance.segments)
 
 
@@ -349,37 +338,6 @@ def _load_image_timestamps(
                 f"{inputs[role]}: image timestamps do not match {inputs[primary_role]}"
             )
     return primary
-
-
-def _resolve_home_point(
-    root: Path,
-    expected_home_path: Path,
-) -> Tuple[Optional[Path], List[ScanDiagnostic]]:
-    if not expected_home_path.exists():
-        return (
-            None,
-            [
-                ScanDiagnostic(
-                    "warning",
-                    "vloc_input_missing",
-                    root,
-                    "缺少 home_point.txt；该数据集仍可用于 SFVision，但不能用于 VLOC",
-                )
-            ],
-        )
-    try:
-        home_path = resolve_dataset_file(expected_home_path, root, "home_point_path")
-        validate_home_point(home_path)
-        return home_path, []
-    except DatasetError as exc:
-        return (
-            None,
-            [
-                ScanDiagnostic(
-                    "warning", "vloc_input_invalid", expected_home_path, str(exc)
-                )
-            ],
-        )
 
 
 def _dataset_id(root: Path, dataset_type: str) -> str:

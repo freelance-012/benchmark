@@ -4,6 +4,7 @@
 #include <stdlib.h>
 
 #define OUTPUT_FILENAME "mock_output.txt"
+#define HOME_POINT_FILENAME "home_point.txt"
 
 static int parse_number(const char *text, double *value) {
     char *end = NULL;
@@ -60,6 +61,22 @@ int main(int argc, char **argv) {
     }
     if (fclose(output) != 0) {
         ok = 0;
+    }
+    if (ok) {
+        FILE *home_point = fopen(HOME_POINT_FILENAME, "w");
+        if (home_point == NULL) {
+            perror(HOME_POINT_FILENAME);
+            ok = 0;
+        } else {
+            int home_point_ok =
+                fputs("121.2 31.1 51.0\n", home_point) >= 0;
+            if (fclose(home_point) != 0) {
+                home_point_ok = 0;
+            }
+            if (!home_point_ok) {
+                ok = 0;
+            }
+        }
     }
     return ok ? 0 : 5;
 }

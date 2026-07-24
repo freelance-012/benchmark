@@ -7,11 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-from ..algorithms.contracts import (
-    EVALUATION_WORKFLOW_SF_VLOC,
-    AlgorithmContract,
-    get_algorithm_contract,
-)
+from ..algorithms.contracts import AlgorithmContract, get_algorithm_contract
 from ..compilation.models import BuildReceipt
 from ..compilation.service import BuildError, BuildService
 from ..compilation.storage import BuildReceiptStore
@@ -24,8 +20,10 @@ from .command import CommandError, build_run_command
 from .models import (
     FAILURE_POLICIES,
     FAILURE_POLICY_FAIL_FAST,
+    RUN_CONFIG_SCHEMA_VERSION,
     DatasetRunReceipt,
     ProcessResult,
+    ResolvedRunCommand,
     RunCheckpoint,
     RunIssue,
     RunRequest,
@@ -37,6 +35,7 @@ from .runner import (
     prepare_fixed_output,
     resolve_fixed_output,
     run_process,
+    validate_additional_output,
     validate_fixed_output,
 )
 from .storage import RunStorageError, RunStore
@@ -99,8 +98,8 @@ class ExecutionService:
             timeout_seconds=request.timeout_seconds,
             dataset_order=tuple(item.dataset_id for item in prepared.instances),
             next_dataset_index=0,
-            finished_dataset_ids=(),
-            dataset_receipt_paths=(),
+            next_segment_index=0,
+            dataset_results=(),
             preflight_issues=prepared.issues,
             algorithm_failure_count=0,
             status="prepared",
@@ -231,13 +230,16 @@ class ExecutionService:
             ) from exc
 
         current_dataset_id = checkpoint.dataset_order[checkpoint.next_dataset_index]
+        run_indexes_by_dataset = _dataset_run_indexes(prepared.instances)
         checkpoint = self._remove_incomplete_attempt(
-            test_root,
             checkpoint,
             current_dataset_id,
         )
         try:
-            self.store.archive_incomplete_dataset(test_root, current_dataset_id)
+            self.store.reset_segment_directories(
+                test_root,
+                run_indexes_by_dataset[current_dataset_id],
+            )
         except RunStorageError as exc:
             raise ExecutionError(str(exc)) from exc
 
@@ -272,9 +274,13 @@ class ExecutionService:
         ordered_instances = tuple(
             instance_by_id[dataset_id] for dataset_id in checkpoint.dataset_order
         )
+        run_indexes_by_dataset = _dataset_run_indexes(ordered_instances)
 
         for index in range(checkpoint.next_dataset_index, len(ordered_instances)):
             instance = ordered_instances[index]
+            run_indexes = run_indexes_by_dataset[instance.dataset_id]
+            dataset_start_index = run_indexes[0]
+            next_segment_index = run_indexes[-1] + 1
             try:
                 entrypoint = build_service.verify_runtime_context(build_receipt)
                 dataset_receipt = self._run_dataset(
@@ -285,23 +291,21 @@ class ExecutionService:
                     build_service,
                     build_receipt,
                     test_root,
-                )
-                receipt_path = self.store.save_dataset_receipt(
-                    test_root, dataset_receipt
+                    run_indexes,
                 )
             except (BuildError, RunnerError, RunStorageError) as exc:
                 checkpoint = replace(
                     checkpoint,
                     status="failed",
                     next_dataset_index=index,
+                    next_segment_index=dataset_start_index,
                     updated_at=_utc_now(),
                     failure_reason=str(exc),
                 )
                 self._save_checkpoint(test_root, checkpoint)
                 return self._summarize(test_root, checkpoint)
 
-            relative_receipt = str(receipt_path.relative_to(test_root))
-            receipt_paths = checkpoint.dataset_receipt_paths + (relative_receipt,)
+            dataset_results = checkpoint.dataset_results + (dataset_receipt,)
             failure_count = (
                 checkpoint.algorithm_failure_count
                 + dataset_receipt.algorithm_failure_count
@@ -312,7 +316,8 @@ class ExecutionService:
                     checkpoint,
                     status="interrupted",
                     next_dataset_index=index,
-                    dataset_receipt_paths=receipt_paths,
+                    next_segment_index=dataset_start_index,
+                    dataset_results=dataset_results,
                     algorithm_failure_count=failure_count,
                     updated_at=_utc_now(),
                     failure_reason=dataset_receipt.failure_reason,
@@ -328,7 +333,8 @@ class ExecutionService:
                     checkpoint,
                     status="failed",
                     next_dataset_index=index,
-                    dataset_receipt_paths=receipt_paths,
+                    next_segment_index=dataset_start_index,
+                    dataset_results=dataset_results,
                     algorithm_failure_count=failure_count,
                     updated_at=_utc_now(),
                     failure_reason=dataset_receipt.failure_reason,
@@ -340,10 +346,8 @@ class ExecutionService:
                 checkpoint,
                 status="running",
                 next_dataset_index=index + 1,
-                finished_dataset_ids=(
-                    checkpoint.finished_dataset_ids + (instance.dataset_id,)
-                ),
-                dataset_receipt_paths=receipt_paths,
+                next_segment_index=next_segment_index,
+                dataset_results=dataset_results,
                 algorithm_failure_count=failure_count,
                 updated_at=_utc_now(),
                 failure_reason=None,
@@ -382,6 +386,7 @@ class ExecutionService:
         build_service: BuildService,
         build_receipt: BuildReceipt,
         test_root: Path,
+        run_indexes: Tuple[int, ...],
     ) -> DatasetRunReceipt:
         valid_segments = tuple(
             sorted(
@@ -389,6 +394,10 @@ class ExecutionService:
                 key=lambda item: item.sequence_no,
             )
         )
+        if len(run_indexes) != len(valid_segments):
+            raise RunStorageError(
+                f"Segment index plan changed for dataset {instance.dataset_id}"
+            )
         successful: List[str] = []
         failed: List[str] = []
         not_run: List[str] = []
@@ -397,6 +406,7 @@ class ExecutionService:
         dataset_status = "success"
 
         for segment_index, segment in enumerate(valid_segments):
+            run_index = run_indexes[segment_index]
             entrypoint = build_service.verify_runtime_context(build_receipt)
             try:
                 command = build_run_command(
@@ -416,14 +426,17 @@ class ExecutionService:
 
             paths = self.store.segment_paths(
                 test_root,
-                instance.dataset_id,
-                segment.segment_id,
+                run_index,
             )
-            output_source = resolve_fixed_output(
-                request.build_config.algorithm_path,
-                contract.fixed_output_relative_path,
+            output_sources = tuple(
+                resolve_fixed_output(
+                    request.build_config.algorithm_path,
+                    relative_path,
+                )
+                for relative_path in contract.output_relative_paths
             )
-            prepare_fixed_output(output_source)
+            for output_source in output_sources:
+                prepare_fixed_output(output_source)
             process = run_process(
                 command,
                 request.build_config.algorithm_path,
@@ -432,36 +445,44 @@ class ExecutionService:
                 request.timeout_seconds,
             )
 
-            output_checks: Dict[str, Any]
-            output_result: Optional[Path] = None
+            output_checks, output_error = _validate_output_sources(
+                output_sources,
+                contract,
+                instance,
+                segment,
+                command,
+                accept=process.status == "success",
+            )
+            output_results: List[Path] = []
             segment_status = process.status
             segment_failure = process.failure_reason
             algorithm_failure = process.status in {"failed", "timeout"}
 
             if process.status == "success":
-                output_checks, output_error = validate_fixed_output(
-                    output_source,
-                    contract,
-                    instance,
-                    segment,
-                    command,
-                )
-                output_checks["accepted"] = output_error is None
                 if output_error is not None:
                     segment_status = "failed"
                     segment_failure = output_error
                     algorithm_failure = True
                 else:
                     try:
-                        output_result = self.store.copy_fixed_output(
+                        for (
                             output_source,
-                            paths.result_dir,
-                            contract.fixed_output_relative_path,
-                        )
+                            relative_path,
+                        ) in zip(
+                            output_sources,
+                            contract.output_relative_paths,
+                        ):
+                            output_results.append(
+                                self.store.copy_fixed_output(
+                                    output_source,
+                                    paths.segment_dir,
+                                    relative_path,
+                                )
+                            )
                         self._copy_evaluation_support_files(
                             contract,
                             instance,
-                            paths.result_dir,
+                            paths.segment_dir,
                         )
                     except RunStorageError as exc:
                         segment_status = "failed"
@@ -473,13 +494,14 @@ class ExecutionService:
                             contract,
                             instance,
                             segment,
+                            run_index,
                             entrypoint,
                             command.argv,
                             process,
                             paths.stdout_path,
                             paths.stderr_path,
-                            output_source,
-                            output_result,
+                            output_sources,
+                            tuple(output_results),
                             output_checks,
                             segment_status,
                             algorithm_failure,
@@ -487,17 +509,6 @@ class ExecutionService:
                         )
                         self.store.save_segment_receipt(paths, receipt)
                         raise
-            else:
-                output_checks, output_error = validate_fixed_output(
-                    output_source,
-                    contract,
-                    instance,
-                    segment,
-                    command,
-                )
-                output_checks["accepted"] = False
-                if output_error is not None:
-                    output_checks["validation_error"] = output_error
 
             receipt = self._segment_receipt(
                 test_root,
@@ -505,13 +516,14 @@ class ExecutionService:
                 contract,
                 instance,
                 segment,
+                run_index,
                 entrypoint,
                 command.argv,
                 process,
                 paths.stdout_path,
                 paths.stderr_path,
-                output_source,
-                output_result,
+                output_sources,
+                tuple(output_results),
                 output_checks,
                 segment_status,
                 algorithm_failure,
@@ -569,13 +581,6 @@ class ExecutionService:
             result_dir,
             required=True,
         )
-        if contract.evaluation_workflow == EVALUATION_WORKFLOW_SF_VLOC:
-            self._copy_dataset_result_file(
-                instance,
-                "home_point_path",
-                result_dir,
-                required=True,
-            )
 
     def _copy_dataset_result_file(
         self,
@@ -615,13 +620,14 @@ class ExecutionService:
         contract: AlgorithmContract,
         instance: DatasetInstance,
         segment: Segment,
+        run_index: int,
         entrypoint: Path,
         command: Tuple[str, ...],
         process: ProcessResult,
         stdout_path: Path,
         stderr_path: Path,
-        output_source: Path,
-        output_result: Optional[Path],
+        output_sources: Tuple[Path, ...],
+        output_results: Tuple[Path, ...],
         output_checks: Dict[str, Any],
         status: str,
         algorithm_failure: bool,
@@ -631,9 +637,12 @@ class ExecutionService:
             test_id=test_root.name,
             algorithm_id=contract.algorithm_id,
             contract_version=contract.contract_version,
+            run_index=run_index,
             dataset_id=instance.dataset_id,
             dataset_type=instance.dataset_type,
             segment_id=segment.segment_id,
+            segment_start_timestamp=segment.start_timestamp,
+            segment_end_timestamp=segment.end_timestamp,
             resolved_entrypoint=entrypoint,
             working_dir_path=request.build_config.algorithm_path,
             command=command,
@@ -644,8 +653,8 @@ class ExecutionService:
             exit_code=process.exit_code,
             stdout_path=stdout_path,
             stderr_path=stderr_path,
-            output_source_path=output_source,
-            output_result_path=output_result,
+            output_source_paths=output_sources,
+            output_result_paths=output_results,
             output_checks=dict(output_checks),
             algorithm_failure=algorithm_failure,
             failure_reason=failure_reason,
@@ -745,19 +754,6 @@ class ExecutionService:
                     )
                 )
                 continue
-            if (
-                contract.evaluation_workflow == EVALUATION_WORKFLOW_SF_VLOC
-                and instance.input_paths.get("home_point_path") is None
-            ):
-                issues.append(
-                    RunIssue(
-                        "missing_vloc_home_point",
-                        instance.root_path,
-                        "sf_vloc requires a valid home_point.txt",
-                        instance.dataset_id,
-                    )
-                )
-                continue
             runnable.append(instance)
 
         return _PreparedDatasets(
@@ -774,7 +770,7 @@ class ExecutionService:
         frozen_run: Dict[str, object],
     ) -> None:
         expected_algorithm = {
-            "schema_version": 1,
+            "schema_version": RUN_CONFIG_SCHEMA_VERSION,
             "algorithm": request.build_config.algorithm_id,
             "build": {
                 "algorithm_path": str(request.build_config.algorithm_path),
@@ -833,6 +829,20 @@ class ExecutionService:
             "preflight_issues"
         ):
             raise ExecutionError("dataset preflight results changed; start a new run")
+        current_segment_order = [
+            {
+                "run_index": run_index,
+                "dataset_id": instance.dataset_id,
+                "segment_id": segment.segment_id,
+                "start_timestamp": segment.start_timestamp,
+                "end_timestamp": segment.end_timestamp,
+            }
+            for run_index, (instance, segment) in enumerate(
+                _ordered_valid_segments(prepared.instances)
+            )
+        ]
+        if current_segment_order != frozen_run.get("segment_order"):
+            raise ExecutionError("Segment order changed; start a new run")
         for instance in prepared.instances:
             path = test_root / "config" / "datasets" / f"{instance.dataset_id}.yaml"
             try:
@@ -846,24 +856,23 @@ class ExecutionService:
 
     def _remove_incomplete_attempt(
         self,
-        test_root: Path,
         checkpoint: RunCheckpoint,
         dataset_id: str,
     ) -> RunCheckpoint:
-        relative = (Path("datasets") / dataset_id / "dataset_receipt.yaml").as_posix()
-        if relative not in checkpoint.dataset_receipt_paths:
+        incomplete_results = tuple(
+            item for item in checkpoint.dataset_results if item.dataset_id == dataset_id
+        )
+        if not incomplete_results:
             return checkpoint
-        try:
-            payload = self.store.load_mapping(test_root / relative)
-            previous_failures = int(payload.get("algorithm_failure_count", 0))
-        except (RunStorageError, TypeError, ValueError) as exc:
-            raise ExecutionError(
-                f"cannot inspect incomplete dataset receipt: {exc}"
-            ) from exc
+        previous_failures = sum(
+            item.algorithm_failure_count for item in incomplete_results
+        )
         return replace(
             checkpoint,
-            dataset_receipt_paths=tuple(
-                item for item in checkpoint.dataset_receipt_paths if item != relative
+            dataset_results=tuple(
+                item
+                for item in checkpoint.dataset_results
+                if item.dataset_id != dataset_id
             ),
             algorithm_failure_count=max(
                 0, checkpoint.algorithm_failure_count - previous_failures
@@ -880,18 +889,13 @@ class ExecutionService:
         successful_segments = 0
         failed_segments = 0
 
-        for relative in checkpoint.dataset_receipt_paths:
-            try:
-                payload = self.store.load_mapping(test_root / relative)
-            except RunStorageError as exc:
-                raise ExecutionError(str(exc)) from exc
-            status = str(payload.get("status"))
-            if status == "success":
+        for result in checkpoint.dataset_results:
+            if result.status == "success":
                 successful_datasets += 1
             else:
                 failed_datasets += 1
-            successful_segments += len(payload.get("successful_segment_ids", []))
-            failed_segments += len(payload.get("failed_segment_ids", []))
+            successful_segments += len(result.successful_segment_ids)
+            failed_segments += len(result.failed_segment_ids)
 
         total_segments = 0
         for dataset_id in checkpoint.dataset_order:
@@ -976,6 +980,64 @@ def _deduplicate_issues(issues: Sequence[RunIssue]) -> List[RunIssue]:
             existing.dataset_id or issue.dataset_id,
         )
     return sorted(merged.values(), key=lambda item: (str(item.path), item.code))
+
+
+def _ordered_valid_segments(
+    instances: Sequence[DatasetInstance],
+) -> Tuple[Tuple[DatasetInstance, Segment], ...]:
+    return tuple(
+        (instance, segment)
+        for instance in instances
+        for segment in sorted(
+            (item for item in instance.segments if item.valid),
+            key=lambda item: item.sequence_no,
+        )
+    )
+
+
+def _dataset_run_indexes(
+    instances: Sequence[DatasetInstance],
+) -> Dict[str, Tuple[int, ...]]:
+    indexes: Dict[str, List[int]] = {}
+    for run_index, (instance, _) in enumerate(_ordered_valid_segments(instances)):
+        indexes.setdefault(instance.dataset_id, []).append(run_index)
+    return {
+        dataset_id: tuple(dataset_indexes)
+        for dataset_id, dataset_indexes in indexes.items()
+    }
+
+
+def _validate_output_sources(
+    output_sources: Tuple[Path, ...],
+    contract: AlgorithmContract,
+    instance: DatasetInstance,
+    segment: Segment,
+    command: ResolvedRunCommand,
+    *,
+    accept: bool,
+) -> Tuple[Dict[str, Any], Optional[str]]:
+    checks_by_path: Dict[str, Any] = {}
+    first_error: Optional[str] = None
+    for output_index, (relative_path, output_source) in enumerate(
+        zip(contract.output_relative_paths, output_sources)
+    ):
+        if output_index == 0:
+            checks, error = validate_fixed_output(
+                output_source,
+                contract,
+                instance,
+                segment,
+                command,
+            )
+        else:
+            checks, error = validate_additional_output(output_source)
+        checks["accepted"] = accept and error is None
+        if error is not None:
+            checks["validation_error"] = error
+            if first_error is None:
+                first_error = error
+        checks_by_path[relative_path.as_posix()] = checks
+    return checks_by_path, first_error
 
 
 def _path_matches_selection(path: Path, selected: Sequence[Path]) -> bool:
