@@ -24,6 +24,11 @@ from slam_benchmark.execution.models import (
     FAILURE_POLICY_FAIL_FAST,
     RunRequest,
 )
+from slam_benchmark.execution.runner import (
+    RunnerError,
+    read_numbered_output_snapshot,
+    resolve_numbered_output_sources,
+)
 from slam_benchmark.execution.service import ExecutionError, ExecutionService
 from tests.test_dataset_manager import _write_dataset, _write_kitti_sequence
 
@@ -106,6 +111,141 @@ class ExecutionModuleTests(unittest.TestCase):
         self.assertIn(f"dataset_root={dataset}", output)
         self.assertTrue((result_dir / "calib_raw.yaml").is_file())
         self.assertFalse((result_dir / "home_point.txt").exists())
+        output_root = algorithm_root.parent / "algorithm1_output"
+        self.assertEqual(
+            self._yaml(output_root / "counter.yaml"),
+            {"last_completed": 0},
+        )
+        self.assertEqual(
+            (output_root / "0" / "mock_output.txt").read_bytes(),
+            (result_dir / "mock_output.txt").read_bytes(),
+        )
+        self.assertEqual(
+            self._yaml(result_dir / "output_counter.yaml"),
+            {"last_completed": 0},
+        )
+        receipt = self._yaml(result_dir / "receipt.yaml")
+        self.assertEqual(
+            receipt["output_source_paths"],
+            [str(output_root / "0" / "mock_output.txt")],
+        )
+        frozen = self._yaml(summary.result_root / "config" / "algorithm.yaml")
+        self.assertEqual(
+            frozen["run"]["output_root_path"],
+            str(output_root),
+        )
+
+    def test_algorithm1_numbered_output_advances_for_each_segment(self) -> None:
+        algorithm_root = self._copy_git_algorithm("algorithm1")
+        collection = self.root / "algorithm1 numbered outputs"
+        self._create_sf_dataset(
+            collection,
+            "two-segments",
+            "rk3399",
+            segment_count=2,
+        )
+
+        summary = ExecutionService().start(
+            self._request(
+                "algorithm1",
+                algorithm_root,
+                collection,
+                "rk3399",
+            )
+        )
+
+        self.assertEqual(summary.status, "success")
+        self.assertEqual(summary.successful_segments, 2)
+        output_root = algorithm_root.parent / "algorithm1_output"
+        self.assertEqual(
+            self._yaml(output_root / "counter.yaml"),
+            {"last_completed": 1},
+        )
+        self.assertTrue((output_root / "0" / "mock_output.txt").is_file())
+        self.assertTrue((output_root / "1" / "mock_output.txt").is_file())
+        first_result = summary.result_root / "dataset" / "0"
+        second_result = summary.result_root / "dataset" / "1"
+        self.assertEqual(
+            self._yaml(first_result / "output_counter.yaml"),
+            {"last_completed": 0},
+        )
+        self.assertEqual(
+            self._yaml(second_result / "output_counter.yaml"),
+            {"last_completed": 1},
+        )
+        self.assertNotEqual(
+            (first_result / "mock_output.txt").read_bytes(),
+            (second_result / "mock_output.txt").read_bytes(),
+        )
+
+    def test_algorithm1_requires_numbered_output_root_configuration(self) -> None:
+        algorithm_root = self._copy_git_algorithm("algorithm1")
+        collection, _ = self._create_collection(
+            "rk3399",
+            "algorithm1-missing-output-root",
+        )
+        request = self._request(
+            "algorithm1",
+            algorithm_root,
+            collection,
+            "rk3399",
+        )
+        request = replace(
+            request,
+            build_config=replace(
+                request.build_config,
+                output_root_path=None,
+            ),
+        )
+
+        with self.assertRaisesRegex(
+            ExecutionError,
+            "run.output_root_path is required for algorithm1",
+        ):
+            ExecutionService().start(request)
+
+    def test_numbered_output_counter_must_advance_exactly_once(self) -> None:
+        output_root = self.root / "external numbered output"
+        output_root.mkdir()
+        (output_root / "counter.yaml").write_text(
+            "last_completed: -1\n",
+            encoding="utf-8",
+        )
+        before = read_numbered_output_snapshot(
+            output_root,
+            Path("counter.yaml"),
+            allow_uninitialized=True,
+        )
+        numbered_directory = output_root / "0"
+        numbered_directory.mkdir()
+        (numbered_directory / "mock_output.txt").write_text(
+            "output without a counter update\n",
+            encoding="utf-8",
+        )
+
+        with self.assertRaisesRegex(
+            RunnerError,
+            "did not advance exactly once",
+        ):
+            resolve_numbered_output_sources(
+                before,
+                Path("counter.yaml"),
+                (Path("mock_output.txt"),),
+            )
+
+    def test_nonempty_numbered_output_requires_counter(self) -> None:
+        output_root = self.root / "output without counter"
+        (output_root / "0").mkdir(parents=True)
+
+        with self.assertRaisesRegex(
+            RunnerError,
+            "counter does not exist",
+        ):
+            read_numbered_output_snapshot(
+                output_root,
+                Path("counter.yaml"),
+                allow_uninitialized=True,
+            )
 
     def test_configured_command_template_is_executed_and_frozen(self) -> None:
         algorithm_root = self._copy_git_algorithm("algorithm2")
@@ -1048,6 +1188,11 @@ class ExecutionModuleTests(unittest.TestCase):
                 algorithm_id=algorithm_id,
                 algorithm_path=algorithm_root,
                 script_path=algorithm_root / "build.sh",
+                output_root_path=(
+                    algorithm_root.parent / "algorithm1_output"
+                    if algorithm_id == "algorithm1"
+                    else None
+                ),
             ),
             dataset_configs=(
                 DatasetScanConfig(

@@ -86,11 +86,13 @@ def load_build_config(config_path: Union[str, Path]) -> BuildConfig:
         raise ConfigError(f"missing build.{exc.args[0]}") from exc
 
     command_template = _load_command_template(payload, contract)
+    output_root_path = _load_output_root_path(payload)
     return BuildConfig(
         algorithm_id=contract.algorithm_id,
         algorithm_path=algorithm_path,
         script_path=script_path,
         command_template=command_template,
+        output_root_path=output_root_path,
     )
 
 
@@ -117,6 +119,18 @@ def _load_command_template(
         return validate_command_template(raw_template, contract)
     except ValueError as exc:
         raise ConfigError(str(exc)) from exc
+
+
+def _load_output_root_path(payload: Dict[str, Any]) -> Optional[Path]:
+    run = payload.get("run")
+    if run is None:
+        return None
+    if not isinstance(run, dict):
+        raise ConfigError("run must be a mapping")
+    raw_path = run.get("output_root_path")
+    if raw_path is None:
+        return None
+    return _absolute_config_path(raw_path, "run.output_root_path")
 
 
 def _absolute_config_path(value: Any, field: str) -> Path:

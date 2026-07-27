@@ -1,9 +1,17 @@
+#include <ctype.h>
 #include <errno.h>
+#include <limits.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 #define OUTPUT_FILENAME "mock_output.txt"
+#define OUTPUT_ROOT "../algorithm1_output"
+#define COUNTER_FILENAME "counter.yaml"
+#define COUNTER_TEMP_FILENAME "counter.yaml.tmp"
+#define PATH_BUFFER_SIZE 4096
 
 static int parse_number(const char *text, double *value) {
     char *end = NULL;
@@ -17,6 +25,105 @@ static int emit(FILE *output, const char *key, const char *value) {
         return 0;
     }
     return fprintf(output, "%s=%s\n", key, value) >= 0;
+}
+
+static int ensure_directory(const char *path) {
+    struct stat status;
+
+    if (mkdir(path, 0775) == 0) {
+        return 1;
+    }
+    if (errno != EEXIST) {
+        perror(path);
+        return 0;
+    }
+    if (stat(path, &status) != 0) {
+        perror(path);
+        return 0;
+    }
+    if (!S_ISDIR(status.st_mode)) {
+        fprintf(stderr, "output root is not a directory: %s\n", path);
+        return 0;
+    }
+    return 1;
+}
+
+static int read_last_completed(const char *counter_path, long *value) {
+    FILE *counter = fopen(counter_path, "r");
+    if (counter == NULL) {
+        if (errno == ENOENT) {
+            *value = -1;
+            return 1;
+        }
+        perror(counter_path);
+        return 0;
+    }
+
+    char line[128];
+    char extra = '\0';
+    int valid = fgets(line, sizeof(line), counter) != NULL &&
+                sscanf(line, "last_completed: %ld %c", value, &extra) == 1 &&
+                *value >= -1;
+    if (valid) {
+        int character = 0;
+        while ((character = fgetc(counter)) != EOF) {
+            if (!isspace((unsigned char)character)) {
+                valid = 0;
+                break;
+            }
+        }
+    }
+    if (fclose(counter) != 0) {
+        valid = 0;
+    }
+    if (!valid) {
+        fprintf(stderr, "invalid counter file: %s\n", counter_path);
+    }
+    return valid;
+}
+
+static int write_counter(const char *counter_path, long value) {
+    char temporary_path[PATH_BUFFER_SIZE];
+    int temporary_length = snprintf(
+        temporary_path,
+        sizeof(temporary_path),
+        "%s/%s",
+        OUTPUT_ROOT,
+        COUNTER_TEMP_FILENAME
+    );
+    if (temporary_length < 0 ||
+        (size_t)temporary_length >= sizeof(temporary_path)) {
+        fprintf(stderr, "counter temporary path is too long\n");
+        return 0;
+    }
+
+    FILE *counter = fopen(temporary_path, "w");
+    if (counter == NULL) {
+        perror(temporary_path);
+        return 0;
+    }
+    int ok = fprintf(counter, "last_completed: %ld\n", value) >= 0;
+    if (fclose(counter) != 0) {
+        ok = 0;
+    }
+    if (!ok) {
+        unlink(temporary_path);
+        return 0;
+    }
+    if (rename(temporary_path, counter_path) != 0) {
+        perror(counter_path);
+        unlink(temporary_path);
+        return 0;
+    }
+    return 1;
+}
+
+static void remove_incomplete_output(
+    const char *output_path,
+    const char *directory_path
+) {
+    unlink(output_path);
+    rmdir(directory_path);
 }
 
 int main(int argc, char **argv) {
@@ -62,9 +169,82 @@ int main(int argc, char **argv) {
         return 3;
     }
 
-    FILE *output = fopen(OUTPUT_FILENAME, "w");
+    if (!ensure_directory(OUTPUT_ROOT)) {
+        return 4;
+    }
+
+    char counter_path[PATH_BUFFER_SIZE];
+    int counter_length = snprintf(
+        counter_path,
+        sizeof(counter_path),
+        "%s/%s",
+        OUTPUT_ROOT,
+        COUNTER_FILENAME
+    );
+    if (counter_length < 0 || (size_t)counter_length >= sizeof(counter_path)) {
+        fprintf(stderr, "counter path is too long\n");
+        return 4;
+    }
+
+    long last_completed = -1;
+    if (!read_last_completed(counter_path, &last_completed) ||
+        last_completed == LONG_MAX) {
+        return 4;
+    }
+    long output_index = last_completed + 1;
+
+    char temporary_directory[PATH_BUFFER_SIZE];
+    char output_directory[PATH_BUFFER_SIZE];
+    char output_path[PATH_BUFFER_SIZE];
+    int temporary_length = snprintf(
+        temporary_directory,
+        sizeof(temporary_directory),
+        "%s/.%ld.tmp",
+        OUTPUT_ROOT,
+        output_index
+    );
+    int directory_length = snprintf(
+        output_directory,
+        sizeof(output_directory),
+        "%s/%ld",
+        OUTPUT_ROOT,
+        output_index
+    );
+    int output_length = snprintf(
+        output_path,
+        sizeof(output_path),
+        "%s/%s",
+        temporary_directory,
+        OUTPUT_FILENAME
+    );
+    if (temporary_length < 0 ||
+        (size_t)temporary_length >= sizeof(temporary_directory) ||
+        directory_length < 0 ||
+        (size_t)directory_length >= sizeof(output_directory) ||
+        output_length < 0 ||
+        (size_t)output_length >= sizeof(output_path)) {
+        fprintf(stderr, "numbered output path is too long\n");
+        return 4;
+    }
+
+    struct stat existing_output;
+    if (stat(output_directory, &existing_output) == 0) {
+        fprintf(stderr, "numbered output already exists: %s\n", output_directory);
+        return 4;
+    }
+    if (errno != ENOENT) {
+        perror(output_directory);
+        return 4;
+    }
+    if (mkdir(temporary_directory, 0775) != 0) {
+        perror(temporary_directory);
+        return 4;
+    }
+
+    FILE *output = fopen(output_path, "w");
     if (output == NULL) {
-        perror(OUTPUT_FILENAME);
+        perror(output_path);
+        remove_incomplete_output(output_path, temporary_directory);
         return 4;
     }
 
@@ -84,5 +264,33 @@ int main(int argc, char **argv) {
     if (fclose(output) != 0) {
         ok = 0;
     }
-    return ok ? 0 : 5;
+    if (!ok) {
+        remove_incomplete_output(output_path, temporary_directory);
+        return 5;
+    }
+    if (rename(temporary_directory, output_directory) != 0) {
+        perror(output_directory);
+        remove_incomplete_output(output_path, temporary_directory);
+        return 5;
+    }
+    if (!write_counter(counter_path, output_index)) {
+        char completed_output_path[PATH_BUFFER_SIZE];
+        int completed_length = snprintf(
+            completed_output_path,
+            sizeof(completed_output_path),
+            "%s/%s",
+            output_directory,
+            OUTPUT_FILENAME
+        );
+        if (completed_length >= 0 &&
+            (size_t)completed_length < sizeof(completed_output_path)) {
+            remove_incomplete_output(completed_output_path, output_directory);
+        }
+        return 5;
+    }
+
+    fprintf(stdout, "output_index=%ld\n", output_index);
+    fprintf(stdout, "output_directory=%s\n", output_directory);
+    fprintf(stdout, "counter_path=%s\n", counter_path);
+    return 0;
 }

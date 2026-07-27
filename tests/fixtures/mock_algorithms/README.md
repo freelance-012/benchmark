@@ -6,7 +6,7 @@
 
 | 测试算法 | 对应数据集类型 | 编译入口 | 编译产物 | 固定输出 |
 | --- | --- | --- | --- | --- |
-| `algorithm1` | RK3588、RK3399 | `build.sh` | `build/algorithm1` | `mock_output.txt` |
+| `algorithm1` | RK3588、RK3399 | `build.sh` | `build/algorithm1` | `../algorithm1_output/<编号>/mock_output.txt` |
 | `algorithm2` | RK3399 | `build.sh` | `build/algorithm2` | `mock_output.txt`、`home_point.txt` |
 | `algorithm3` | KITTI | `build.sh` | `build/algorithm3` | `mock_output.txt` |
 
@@ -20,9 +20,11 @@
 - `algorithm2` 接收 RK3399 的 IMU、视频、图像时间戳和标定路径。
 - `algorithm3` 接收 KITTI 的时间戳、标定、左右图像目录，以及可选真值路径。
 
-三个程序都将相同格式的键值记录打印到标准输出，并覆盖写入算法工作目录下的
-`mock_output.txt`。测试会逐行比较标准输出、固定输出和预期参数，差异即表示
-Pipeline 的输入映射或工作目录处理存在问题。`algorithm2` 还会同时生成
+三个程序都将相同格式的键值记录打印到标准输出。`algorithm1` 在算法目录旁的
+`algorithm1_output/` 中维护 `counter.yaml`，每次把输出写入新的数字目录；
+`algorithm2` 和 `algorithm3` 仍覆盖写入算法工作目录下的 `mock_output.txt`。
+测试会比较标准输出、固定输出和预期参数，差异即表示 Pipeline 的输入映射、
+工作目录或外部输出定位存在问题。`algorithm2` 还会同时生成
 `home_point.txt`，用于验证 VLOC 的轨迹和 home point 都属于算法输出。
 
 夹具目录本身不是独立 Git 仓库。需要测试 Git 记录时，应先复制单个算法目录到

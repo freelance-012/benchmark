@@ -8,6 +8,8 @@ import unittest
 from pathlib import Path
 from typing import List, Tuple
 
+import yaml
+
 
 FIXTURE_ROOT = Path(__file__).parent / "fixtures" / "mock_algorithms"
 InputSpec = Tuple[str, str, bool]
@@ -184,8 +186,22 @@ class MockAlgorithmTests(unittest.TestCase):
             *(f"input.{role}={path}" for role, path in input_paths),
         ]
         expected = "\n".join(expected_lines) + "\n"
-        output = algorithm_root / "mock_output.txt"
-        self.assertEqual(run.stdout, expected)
+        if algorithm_id == "algorithm1":
+            output_root = algorithm_root.parent / "algorithm1_output"
+            counter_path = output_root / "counter.yaml"
+            counter = yaml.safe_load(counter_path.read_text(encoding="utf-8"))
+            output_index = counter["last_completed"]
+            output = output_root / str(output_index) / "mock_output.txt"
+            expected_stdout = (
+                expected
+                + f"output_index={output_index}\n"
+                + f"output_directory=../algorithm1_output/{output_index}\n"
+                + "counter_path=../algorithm1_output/counter.yaml\n"
+            )
+        else:
+            output = algorithm_root / "mock_output.txt"
+            expected_stdout = expected
+        self.assertEqual(run.stdout, expected_stdout)
         self.assertTrue(output.is_file())
         self.assertEqual(output.read_text(encoding="utf-8"), expected)
 

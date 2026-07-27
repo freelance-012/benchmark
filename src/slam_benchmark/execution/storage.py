@@ -49,10 +49,17 @@ class RunStore:
             },
             "contract": contract.to_dict(),
         }
+        algorithm_run_payload: Dict[str, Any] = {}
         if request.build_config.command_template is not None:
-            algorithm_payload["run"] = {
-                "command_template": list(request.build_config.command_template),
-            }
+            algorithm_run_payload["command_template"] = list(
+                request.build_config.command_template
+            )
+        if request.build_config.output_root_path is not None:
+            algorithm_run_payload["output_root_path"] = str(
+                request.build_config.output_root_path
+            )
+        if algorithm_run_payload:
+            algorithm_payload["run"] = algorithm_run_payload
         run_payload = {
             "schema_version": RUN_CONFIG_SCHEMA_VERSION,
             "test_id": test_root.name,

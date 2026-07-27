@@ -8,9 +8,12 @@ import os
 import signal
 import subprocess
 import time
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Sequence, Tuple
+
+import yaml
 
 from ..algorithms.contracts import AlgorithmContract
 from ..datasets.models import DatasetInstance, Segment
@@ -29,6 +32,15 @@ _MOCK_TIMESTAMP_TOLERANCE_SECONDS = 1e-3
 
 class RunnerError(Exception):
     """The execution environment cannot safely start or record an algorithm."""
+
+
+@dataclass(frozen=True)
+class NumberedOutputSnapshot:
+    """One stable view of an algorithm-owned numbered output root."""
+
+    root_path: Path
+    counter_path: Path
+    last_completed: int
 
 
 def resolve_fixed_output(
@@ -60,6 +72,122 @@ def prepare_fixed_output(path: Path) -> None:
         path.unlink()
     except OSError as exc:
         raise RunnerError(f"cannot remove stale fixed output {path}: {exc}") from exc
+
+
+def read_numbered_output_snapshot(
+    output_root_path: Path,
+    counter_relative_path: Path,
+    *,
+    allow_uninitialized: bool,
+) -> NumberedOutputSnapshot:
+    """Read an algorithm-owned counter without guessing the newest directory."""
+
+    root = Path(output_root_path).expanduser().resolve()
+    if counter_relative_path.is_absolute() or ".." in counter_relative_path.parts:
+        raise RunnerError(
+            f"numbered output counter path must be relative: {counter_relative_path}"
+        )
+    counter_declared = root / counter_relative_path
+    if counter_declared.is_symlink():
+        raise RunnerError(
+            f"numbered output counter must not be a symlink: {counter_declared}"
+        )
+    counter = counter_declared.resolve()
+    if not _is_within(counter, root):
+        raise RunnerError(f"numbered output counter escapes output root: {counter}")
+
+    if not root.exists():
+        if allow_uninitialized:
+            return NumberedOutputSnapshot(root, counter, -1)
+        raise RunnerError(f"numbered output root does not exist: {root}")
+    if not root.is_dir():
+        raise RunnerError(f"numbered output root is not a directory: {root}")
+
+    if not counter.exists():
+        if allow_uninitialized:
+            try:
+                has_existing_content = next(root.iterdir(), None) is not None
+            except OSError as exc:
+                raise RunnerError(
+                    f"cannot inspect numbered output root {root}: {exc}"
+                ) from exc
+            if not has_existing_content:
+                return NumberedOutputSnapshot(root, counter, -1)
+        raise RunnerError(f"numbered output counter does not exist: {counter}")
+    if not counter.is_file():
+        raise RunnerError(f"numbered output counter is not a file: {counter}")
+
+    try:
+        payload: Any = yaml.safe_load(counter.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, yaml.YAMLError) as exc:
+        raise RunnerError(
+            f"cannot read numbered output counter {counter}: {exc}"
+        ) from exc
+    if not isinstance(payload, dict):
+        raise RunnerError(
+            f"numbered output counter must contain a YAML mapping: {counter}"
+        )
+    last_completed = payload.get("last_completed")
+    if (
+        isinstance(last_completed, bool)
+        or not isinstance(last_completed, int)
+        or last_completed < -1
+    ):
+        raise RunnerError(
+            "numbered output counter last_completed must be an integer "
+            f"greater than or equal to -1: {counter}"
+        )
+    return NumberedOutputSnapshot(root, counter, last_completed)
+
+
+def resolve_numbered_output_sources(
+    before: NumberedOutputSnapshot,
+    counter_relative_path: Path,
+    output_relative_paths: Sequence[Path],
+) -> Tuple[NumberedOutputSnapshot, Path, Tuple[Path, ...]]:
+    """Locate exactly one new numbered output produced by the last process."""
+
+    after = read_numbered_output_snapshot(
+        before.root_path,
+        counter_relative_path,
+        allow_uninitialized=False,
+    )
+    expected = before.last_completed + 1
+    if after.last_completed != expected:
+        raise RunnerError(
+            "numbered output counter did not advance exactly once: "
+            f"before={before.last_completed}, after={after.last_completed}"
+        )
+
+    directory_declared = after.root_path / str(after.last_completed)
+    if directory_declared.is_symlink():
+        raise RunnerError(
+            f"numbered output directory must not be a symlink: {directory_declared}"
+        )
+    output_directory = directory_declared.resolve()
+    if not _is_within(output_directory, after.root_path):
+        raise RunnerError(
+            f"numbered output directory escapes output root: {output_directory}"
+        )
+    if not output_directory.is_dir():
+        raise RunnerError(
+            f"numbered output directory does not exist: {output_directory}"
+        )
+
+    output_sources = []
+    for relative_path in output_relative_paths:
+        if relative_path.is_absolute() or ".." in relative_path.parts:
+            raise RunnerError(f"fixed output path must be relative: {relative_path}")
+        declared = output_directory / relative_path
+        if declared.is_symlink():
+            raise RunnerError(f"fixed output must not be a symlink: {declared}")
+        resolved = declared.resolve()
+        if not _is_within(resolved, output_directory):
+            raise RunnerError(
+                f"fixed output escapes numbered output directory: {resolved}"
+            )
+        output_sources.append(resolved)
+    return after, output_directory, tuple(output_sources)
 
 
 def run_process(

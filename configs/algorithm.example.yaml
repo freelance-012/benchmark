@@ -4,10 +4,13 @@ build:
   algorithm_path: /absolute/path/to/algorithm1
   script_path: /absolute/path/to/algorithm1/build.sh
 
-# 默认不需要 run 配置，Pipeline 使用内置契约的位置参数顺序。
-# 只有算法要求不同命令格式时才启用下面的覆盖模板：
+run:
+  # algorithm1 自己在这个根目录下维护 counter.yaml 和编号输出目录。
+  output_root_path: /absolute/path/to/algorithm1_output
+
+# 默认使用算法内置契约的位置参数顺序。只有算法要求不同命令格式时，
+# 才在上面的 run 中增加 command_template：
 #
-# run:
 #   command_template: >-
 #     "{executable}" --log={dataset_path}
 #     --start_time={start_ts:.3f} --end_time={end_ts:.3f}

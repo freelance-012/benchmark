@@ -33,9 +33,12 @@ from .models import (
     SegmentRunReceipt,
 )
 from .runner import (
+    NumberedOutputSnapshot,
     RunnerError,
     prepare_fixed_output,
+    read_numbered_output_snapshot,
     resolve_fixed_output,
+    resolve_numbered_output_sources,
     run_process,
     validate_additional_output,
     validate_fixed_output,
@@ -68,6 +71,7 @@ class ExecutionService:
             contract = get_algorithm_contract(request.build_config.algorithm_id)
         except ValueError as exc:
             raise ExecutionError(str(exc)) from exc
+        self._validate_output_configuration(request, contract)
 
         build_service = BuildService(request.build_config, self.build_store)
         try:
@@ -196,6 +200,7 @@ class ExecutionService:
             contract = get_algorithm_contract(request.build_config.algorithm_id)
         except ValueError as exc:
             raise ExecutionError(str(exc)) from exc
+        self._validate_output_configuration(request, contract)
         self._verify_frozen_request(
             request,
             contract,
@@ -427,19 +432,31 @@ class ExecutionService:
                 dataset_status = "failed"
                 break
 
+            numbered_before: Optional[NumberedOutputSnapshot] = None
+            counter_relative_path = contract.numbered_output_counter_relative_path
+            if counter_relative_path is not None:
+                assert request.build_config.output_root_path is not None
+                numbered_before = read_numbered_output_snapshot(
+                    request.build_config.output_root_path,
+                    counter_relative_path,
+                    allow_uninitialized=True,
+                )
+                output_sources: Tuple[Path, ...] = ()
+            else:
+                output_sources = tuple(
+                    resolve_fixed_output(
+                        request.build_config.algorithm_path,
+                        relative_path,
+                    )
+                    for relative_path in contract.output_relative_paths
+                )
+                for output_source in output_sources:
+                    prepare_fixed_output(output_source)
+
             paths = self.store.segment_paths(
                 test_root,
                 run_index,
             )
-            output_sources = tuple(
-                resolve_fixed_output(
-                    request.build_config.algorithm_path,
-                    relative_path,
-                )
-                for relative_path in contract.output_relative_paths
-            )
-            for output_source in output_sources:
-                prepare_fixed_output(output_source)
             process = run_process(
                 command,
                 request.build_config.algorithm_path,
@@ -448,14 +465,56 @@ class ExecutionService:
                 request.timeout_seconds,
             )
 
-            output_checks, output_error = _validate_output_sources(
-                output_sources,
-                contract,
-                instance,
-                segment,
-                command,
-                accept=process.status == "success",
-            )
+            numbered_after: Optional[NumberedOutputSnapshot] = None
+            numbered_output_directory: Optional[Path] = None
+            if numbered_before is not None and process.status == "success":
+                assert counter_relative_path is not None
+                try:
+                    (
+                        numbered_after,
+                        numbered_output_directory,
+                        output_sources,
+                    ) = resolve_numbered_output_sources(
+                        numbered_before,
+                        counter_relative_path,
+                        contract.output_relative_paths,
+                    )
+                except RunnerError as exc:
+                    output_checks = {
+                        "output_counter.yaml": {
+                            "validator": "numbered_output_counter",
+                            "accepted": False,
+                            "validation_error": str(exc),
+                        }
+                    }
+                    output_error: Optional[str] = str(exc)
+                else:
+                    output_checks, output_error = _validate_output_sources(
+                        output_sources,
+                        contract,
+                        instance,
+                        segment,
+                        command,
+                        accept=True,
+                    )
+                    output_checks["output_counter.yaml"] = {
+                        "validator": "numbered_output_counter",
+                        "exists": True,
+                        "format_valid": True,
+                        "counter_before": numbered_before.last_completed,
+                        "counter_after": numbered_after.last_completed,
+                        "source_directory": str(numbered_output_directory),
+                        "accepted": True,
+                    }
+            else:
+                output_checks, output_error = _validate_output_sources(
+                    output_sources,
+                    contract,
+                    instance,
+                    segment,
+                    command,
+                    accept=process.status == "success",
+                )
             output_results: List[Path] = []
             segment_status = process.status
             segment_failure = process.failure_reason
@@ -481,6 +540,12 @@ class ExecutionService:
                                     paths.segment_dir,
                                     relative_path,
                                 )
+                            )
+                        if numbered_after is not None:
+                            self.store.copy_result_file(
+                                numbered_after.counter_path,
+                                paths.segment_dir,
+                                Path("output_counter.yaml"),
                             )
                         self._copy_evaluation_support_files(
                             contract,
@@ -787,10 +852,17 @@ class ExecutionService:
             },
             "contract": contract.to_dict(),
         }
+        expected_run: Dict[str, object] = {}
         if request.build_config.command_template is not None:
-            expected_algorithm["run"] = {
-                "command_template": list(request.build_config.command_template),
-            }
+            expected_run["command_template"] = list(
+                request.build_config.command_template
+            )
+        if request.build_config.output_root_path is not None:
+            expected_run["output_root_path"] = str(
+                request.build_config.output_root_path
+            )
+        if expected_run:
+            expected_algorithm["run"] = expected_run
         if frozen_algorithm != expected_algorithm:
             raise ExecutionError("algorithm configuration or contract changed")
         if checkpoint.algorithm_id != contract.algorithm_id:
@@ -970,6 +1042,22 @@ class ExecutionService:
             raise ExecutionError("run timeout must be greater than zero")
         if not request.dataset_configs:
             raise ExecutionError("at least one dataset config is required")
+
+    @staticmethod
+    def _validate_output_configuration(
+        request: RunRequest,
+        contract: AlgorithmContract,
+    ) -> None:
+        counter_path = contract.numbered_output_counter_relative_path
+        output_root = request.build_config.output_root_path
+        if counter_path is not None and output_root is None:
+            raise ExecutionError(
+                f"run.output_root_path is required for {contract.algorithm_id}"
+            )
+        if counter_path is None and output_root is not None:
+            raise ExecutionError(
+                f"{contract.algorithm_id} does not use a numbered external output"
+            )
 
 
 def _deduplicate_issues(issues: Sequence[RunIssue]) -> List[RunIssue]:

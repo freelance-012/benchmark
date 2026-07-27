@@ -36,6 +36,7 @@ class AlgorithmContract:
     entrypoint_relative_path: Path
     fixed_output_relative_path: Path
     additional_output_relative_paths: Tuple[Path, ...] = ()
+    numbered_output_counter_relative_path: Optional[Path] = None
     output_validator: str = "not_configured"
     dataset_run_contracts: Tuple[DatasetRunContract, ...] = ()
     evaluation_workflow: Optional[str] = None
@@ -45,6 +46,11 @@ class AlgorithmContract:
         output_paths = self.output_relative_paths
         if len(set(output_paths)) != len(output_paths):
             raise ValueError("algorithm output paths must be unique")
+        counter_path = self.numbered_output_counter_relative_path
+        if counter_path is not None and (
+            counter_path.is_absolute() or ".." in counter_path.parts
+        ):
+            raise ValueError("numbered output counter path must be relative")
         run_dataset_types = tuple(
             item.dataset_type for item in self.dataset_run_contracts
         )
@@ -79,7 +85,7 @@ class AlgorithmContract:
         )
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        payload = {
             "algorithm_id": self.algorithm_id,
             "display_name": self.display_name,
             "contract_version": self.contract_version,
@@ -94,15 +100,21 @@ class AlgorithmContract:
                 item.to_dict() for item in self.dataset_run_contracts
             ],
         }
+        if self.numbered_output_counter_relative_path is not None:
+            payload["numbered_output_counter_relative_path"] = str(
+                self.numbered_output_counter_relative_path
+            )
+        return payload
 
 
 _CONTRACTS = {
     "algorithm1": AlgorithmContract(
         algorithm_id="algorithm1",
         display_name="Mock SF VO Algorithm",
-        contract_version=5,
+        contract_version=6,
         entrypoint_relative_path=Path("build/algorithm1"),
         fixed_output_relative_path=Path("mock_output.txt"),
+        numbered_output_counter_relative_path=Path("counter.yaml"),
         output_validator="mock_key_value",
         evaluation_workflow=EVALUATION_WORKFLOW_SF_VO,
         dataset_run_contracts=(

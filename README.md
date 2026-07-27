@@ -143,7 +143,16 @@ algorithm: algorithm1
 build:
   algorithm_path: /absolute/path/to/algorithm1
   script_path: /absolute/path/to/algorithm1/build.sh
+
+run:
+  output_root_path: /absolute/path/to/algorithm1_output
 ```
+
+`algorithm1` 使用外部编号输出：算法在 `output_root_path` 下维护
+`counter.yaml` 和 `0/`、`1/` 等编号目录。Pipeline 对比运行前后的计数器，
+只从本次新增的编号目录复制契约规定的输出，并将计数器快照保存到 Segment
+结果中的 `output_counter.yaml`。没有外部编号输出的算法不配置这个路径，
+继续从算法工作目录读取固定输出。
 
 默认运行命令继续使用算法内置契约规定的位置参数顺序。只有算法要求不同的参数
 前缀或排列时，才增加可选的 `run.command_template`：

@@ -14,8 +14,12 @@ class AlgorithmContractTests(unittest.TestCase):
         contract = get_algorithm_contract("algorithm1")
 
         self.assertEqual(contract.display_name, "Mock SF VO Algorithm")
-        self.assertEqual(contract.contract_version, 5)
+        self.assertEqual(contract.contract_version, 6)
         self.assertEqual(contract.evaluation_workflow, "sf_vo")
+        self.assertEqual(
+            contract.numbered_output_counter_relative_path,
+            Path("counter.yaml"),
+        )
         self.assertEqual(contract.supported_dataset_types, ("rk3588", "rk3399"))
         self.assertEqual(
             contract.run_contract_for("rk3588").required_input_roles,

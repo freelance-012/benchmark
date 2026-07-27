@@ -248,6 +248,7 @@ compiler="${CC:-cc}"
 
     def test_build_config_loads_optional_run_command_template(self) -> None:
         config_path = self.root / "command-template.yaml"
+        output_root = self.root / "algorithm1 outputs"
         template = [
             "{executable}",
             "--log={dataset_path}",
@@ -266,7 +267,10 @@ compiler="${CC:-cc}"
                         "algorithm_path": "/tmp/algorithm1",
                         "script_path": "/tmp/algorithm1/build.sh",
                     },
-                    "run": {"command_template": template_text},
+                    "run": {
+                        "command_template": template_text,
+                        "output_root_path": str(output_root),
+                    },
                 },
                 sort_keys=False,
             ),
@@ -276,6 +280,30 @@ compiler="${CC:-cc}"
         config = load_build_config(config_path)
 
         self.assertEqual(config.command_template, tuple(template))
+        self.assertEqual(config.output_root_path, output_root.resolve())
+
+    def test_build_config_rejects_relative_output_root_path(self) -> None:
+        config_path = self.root / "relative-output-root.yaml"
+        config_path.write_text(
+            yaml.safe_dump(
+                {
+                    "algorithm": "algorithm1",
+                    "build": {
+                        "algorithm_path": "/tmp/algorithm1",
+                        "script_path": "/tmp/algorithm1/build.sh",
+                    },
+                    "run": {"output_root_path": "relative/outputs"},
+                },
+                sort_keys=False,
+            ),
+            encoding="utf-8",
+        )
+
+        with self.assertRaisesRegex(
+            ConfigError,
+            "run.output_root_path must be an absolute path",
+        ):
+            load_build_config(config_path)
 
     def test_build_config_rejects_invalid_run_command_templates(self) -> None:
         cases = (
