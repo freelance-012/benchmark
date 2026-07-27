@@ -11,8 +11,10 @@
 | `algorithm3` | KITTI | `build.sh` | `build/algorithm3` | `mock_output.txt` |
 
 每个编译脚本都要求以对应算法目录作为工作目录，并使用系统 `cc` 编译 `main.c`。
-三个运行入口的前三个参数统一为数据集根路径、Segment 起点和 Segment 终点，
-后续位置参数由各自的数据集类型决定。
+`algorithm1` 保留默认位置参数。`algorithm2` 额外接受 `--参数=值`，用于验证
+折叠字符串形式的 `run.command_template`；`algorithm3` 额外接受
+`--参数 值`，用于验证 YAML 列表模板、参数重排和缺失可选输入 `<none>`。
+三者最终都会输出同一组规范化键值，便于直接比较 Pipeline 传入值。
 
 - `algorithm1` 模拟 VO；RK3588 接收 IMU、四路视频、两份图像时间戳和两份标定路径，RK3399 接收 IMU、视频、图像时间戳和标定路径。
 - `algorithm2` 接收 RK3399 的 IMU、视频、图像时间戳和标定路径。

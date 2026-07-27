@@ -14,6 +14,7 @@ class BuildConfig:
     algorithm_id: str
     algorithm_path: Path
     script_path: Path
+    command_template: Optional[Tuple[str, ...]] = None
 
 
 @dataclass(frozen=True)

@@ -49,6 +49,10 @@ class RunStore:
             },
             "contract": contract.to_dict(),
         }
+        if request.build_config.command_template is not None:
+            algorithm_payload["run"] = {
+                "command_template": list(request.build_config.command_template),
+            }
         run_payload = {
             "schema_version": RUN_CONFIG_SCHEMA_VERSION,
             "test_id": test_root.name,

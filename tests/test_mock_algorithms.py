@@ -118,13 +118,52 @@ class MockAlgorithmTests(unittest.TestCase):
                 path.write_text(f"fixture for {role}\n", encoding="utf-8")
             input_paths.append((role, path.resolve()))
 
-        command = [
-            str(entrypoint),
-            str(dataset_root.resolve()),
-            "10.5",
-            "20.5",
-            *(str(path) for _, path in input_paths),
-        ]
+        input_values = {role: str(path) for role, path in input_paths}
+        start_text = "10.5"
+        end_text = "20.5"
+        if algorithm_id == "algorithm2":
+            start_text = "10.500"
+            end_text = "20.500"
+            command = [
+                str(entrypoint),
+                f"--log={dataset_root.resolve()}",
+                f"--start_time={start_text}",
+                f"--end_time={end_text}",
+                f"--imu={input_values['imu_path']}",
+                f"--image={input_values['image_path']}",
+                f"--timestamps={input_values['image_timestamps_path']}",
+                f"--calibration={input_values['calibration_path']}",
+            ]
+        elif algorithm_id == "algorithm3":
+            start_text = "10.500000"
+            end_text = "20.500000"
+            command = [
+                str(entrypoint),
+                "--dataset",
+                str(dataset_root.resolve()),
+                "--start",
+                start_text,
+                "--end",
+                end_text,
+                "--timestamps",
+                input_values["image_timestamps_path"],
+                "--calibration",
+                input_values["calibration_path"],
+                "--left-images",
+                input_values["left_image_dir"],
+                "--right-images",
+                input_values["right_image_dir"],
+                "--ground-truth",
+                input_values["ground_truth_path"],
+            ]
+        else:
+            command = [
+                str(entrypoint),
+                str(dataset_root.resolve()),
+                start_text,
+                end_text,
+                *(str(path) for _, path in input_paths),
+            ]
         run = subprocess.run(
             command,
             cwd=algorithm_root,
@@ -140,8 +179,8 @@ class MockAlgorithmTests(unittest.TestCase):
             f"algorithm={algorithm_id}",
             f"dataset_type={dataset_type}",
             f"dataset_root={dataset_root.resolve()}",
-            "segment_start=10.5",
-            "segment_end=20.5",
+            f"segment_start={start_text}",
+            f"segment_end={end_text}",
             *(f"input.{role}={path}" for role, path in input_paths),
         ]
         expected = "\n".join(expected_lines) + "\n"

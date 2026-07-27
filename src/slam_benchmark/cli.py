@@ -13,6 +13,7 @@ from .config import load_build_config, load_dataset_config
 from .datasets.errors import DatasetError
 from .datasets.models import ScanReport
 from .datasets.service import DatasetManager
+from .debug import debug_mode
 from .execution.models import (
     FAILURE_POLICY_CONTINUE,
     FAILURE_POLICY_FAIL_FAST,
@@ -26,6 +27,11 @@ def build_parser() -> argparse.ArgumentParser:
         prog="benchmark", description="SLAM algorithm benchmark pipeline"
     )
     parser.add_argument("--version", action="version", version=__version__)
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="print concise dataset, build, and run inputs and outputs",
+    )
     modules = parser.add_subparsers(dest="module", required=True)
 
     dataset = modules.add_parser("dataset", help="manage local datasets")
@@ -106,17 +112,21 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Optional[List[str]] = None) -> int:
-    args = build_parser().parse_args(argv)
-    try:
-        if args.module == "dataset":
-            return _run_dataset_command(args)
-        if args.module == "build":
-            return _run_build_command(args)
-        if args.module == "run":
-            return _run_execution_command(args)
-    except (DatasetError, BuildError, ExecutionError) as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        return 2
+    raw_arguments = list(sys.argv[1:] if argv is None else argv)
+    debug = "--debug" in raw_arguments
+    parsed_arguments = [item for item in raw_arguments if item != "--debug"]
+    args = build_parser().parse_args(parsed_arguments)
+    with debug_mode(debug):
+        try:
+            if args.module == "dataset":
+                return _run_dataset_command(args)
+            if args.module == "build":
+                return _run_build_command(args)
+            if args.module == "run":
+                return _run_execution_command(args)
+        except (DatasetError, BuildError, ExecutionError) as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
     return 2
 
 

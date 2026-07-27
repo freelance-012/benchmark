@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import List, Optional, Set, Tuple
 
+from ..debug import debug_command
 from .contracts import (
     INSTANCE_FILENAME,
     MIN_SEGMENT_DURATION_SECONDS,
@@ -28,6 +29,40 @@ class DatasetManager:
         self.store = store or DatasetInstanceStore()
 
     def scan(self, *, refresh: bool = False, persist: bool = True) -> ScanReport:
+        with debug_command(
+            "DATASET_SCAN",
+            (
+                "dataset.scan",
+                "--root-path",
+                self.config.root_path,
+                "--dataset-type",
+                self.config.dataset_type,
+                "--refresh",
+                refresh,
+                "--persist",
+                persist,
+            ),
+        ) as trace:
+            report = self._scan(refresh=refresh, persist=persist)
+            trace.complete(
+                status="failed" if report.has_errors else "success",
+                datasets=len(report.datasets),
+                ready=sum(item.status == "ready" for item in report.datasets),
+                segments=sum(item.valid_segment_count for item in report.datasets),
+                diagnostics=len(report.diagnostics),
+                saved_files=(
+                    sum(
+                        (item.root_path / INSTANCE_FILENAME).is_file()
+                        for item in report.datasets
+                    )
+                    if persist
+                    else 0
+                ),
+                output_name=INSTANCE_FILENAME if persist else None,
+            )
+            return report
+
+    def _scan(self, *, refresh: bool, persist: bool) -> ScanReport:
         datasets: List[DatasetInstance] = []
         diagnostics: List[ScanDiagnostic] = []
         candidates = self._discover_candidates()
@@ -54,6 +89,26 @@ class DatasetManager:
         return ScanReport(tuple(datasets), tuple(diagnostics))
 
     def catalog(self) -> ScanReport:
+        with debug_command(
+            "DATASET_LIST",
+            (
+                "dataset.list",
+                "--root-path",
+                self.config.root_path,
+                "--dataset-type",
+                self.config.dataset_type,
+            ),
+        ) as trace:
+            report = self._catalog()
+            trace.complete(
+                status="failed" if report.has_errors else "success",
+                datasets=len(report.datasets),
+                ready=sum(item.status == "ready" for item in report.datasets),
+                diagnostics=len(report.diagnostics),
+            )
+            return report
+
+    def _catalog(self) -> ScanReport:
         datasets: List[DatasetInstance] = []
         diagnostics: List[ScanDiagnostic] = []
         for path in sorted(self.config.root_path.rglob(INSTANCE_FILENAME)):

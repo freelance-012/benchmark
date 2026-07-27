@@ -16,6 +16,7 @@ from ..datasets.errors import DatasetError
 from ..datasets.models import DatasetInstance, ScanDiagnostic, Segment
 from ..datasets.paths import resolve_dataset_file
 from ..datasets.service import DatasetManager
+from ..debug import debug_enabled, debug_output
 from .command import CommandError, build_run_command
 from .models import (
     FAILURE_POLICIES,
@@ -28,6 +29,7 @@ from .models import (
     RunIssue,
     RunRequest,
     RunSummary,
+    SegmentPaths,
     SegmentRunReceipt,
 )
 from .runner import (
@@ -414,6 +416,7 @@ class ExecutionService:
                     contract,
                     instance,
                     segment,
+                    command_template=request.build_config.command_template,
                 )
             except CommandError as exc:
                 failed.append(segment.segment_id)
@@ -508,6 +511,7 @@ class ExecutionService:
                             segment_failure,
                         )
                         self.store.save_segment_receipt(paths, receipt)
+                        _debug_run_output(paths, receipt)
                         raise
 
             receipt = self._segment_receipt(
@@ -530,6 +534,7 @@ class ExecutionService:
                 segment_failure,
             )
             self.store.save_segment_receipt(paths, receipt)
+            _debug_run_output(paths, receipt)
             build_service.verify_runtime_context(build_receipt)
 
             if segment_status == "success":
@@ -778,6 +783,10 @@ class ExecutionService:
             },
             "contract": contract.to_dict(),
         }
+        if request.build_config.command_template is not None:
+            expected_algorithm["run"] = {
+                "command_template": list(request.build_config.command_template),
+            }
         if frozen_algorithm != expected_algorithm:
             raise ExecutionError("algorithm configuration or contract changed")
         if checkpoint.algorithm_id != contract.algorithm_id:
@@ -1038,6 +1047,22 @@ def _validate_output_sources(
                 first_error = error
         checks_by_path[relative_path.as_posix()] = checks
     return checks_by_path, first_error
+
+
+def _debug_run_output(
+    paths: SegmentPaths,
+    receipt: SegmentRunReceipt,
+) -> None:
+    if not debug_enabled():
+        return
+    saved = sorted(str(path) for path in paths.segment_dir.rglob("*") if path.is_file())
+    debug_output(
+        "RUN",
+        status=receipt.status,
+        exit_code=receipt.exit_code,
+        failure_reason=receipt.failure_reason,
+        saved=saved,
+    )
 
 
 def _path_matches_selection(path: Path, selected: Sequence[Path]) -> bool:

@@ -12,6 +12,13 @@ from pathlib import Path
 from typing import Optional, Sequence, Tuple
 
 from ..algorithms.contracts import AlgorithmContract, get_algorithm_contract
+from ..debug import (
+    debug_command,
+    debug_output,
+    finish_process_streams,
+    process_output_targets,
+    start_process_streams,
+)
 from .models import BuildConfig, BuildReceipt, GitSnapshot
 from .storage import BuildReceiptStore
 
@@ -161,6 +168,17 @@ class BuildService:
             self.store.save(receipt_path, receipt)
         except RuntimeError as exc:
             raise BuildError(str(exc)) from exc
+        debug_output(
+            "BUILD",
+            status=receipt.status,
+            exit_code=receipt.exit_code,
+            failure_reason=receipt.failure_reason,
+            saved=[
+                str(path)
+                for path in (receipt_path, stdout_path, stderr_path)
+                if path.is_file()
+            ],
+        )
         return receipt
 
     def verify_runtime_context(self, receipt: BuildReceipt) -> Path:
@@ -248,42 +266,61 @@ def _execute_script(
     stderr_path: Path,
     timeout_seconds: float,
 ) -> Tuple[str, Optional[int], Optional[str]]:
-    process: Optional[subprocess.Popen[bytes]] = None
-    with stdout_path.open("wb") as stdout, stderr_path.open("wb") as stderr:
-        try:
-            process = subprocess.Popen(
-                [str(script_path)],
-                cwd=algorithm_path,
-                stdin=subprocess.DEVNULL,
-                stdout=stdout,
-                stderr=stderr,
-                start_new_session=True,
-            )
-            exit_code = process.wait(timeout=timeout_seconds)
-        except subprocess.TimeoutExpired:
-            if process is not None:
-                _terminate_process_group(process)
-                exit_code = process.returncode
-            else:
-                exit_code = None
-            return (
-                "timeout",
-                exit_code,
-                f"build exceeded timeout of {timeout_seconds:g} seconds",
-            )
-        except KeyboardInterrupt:
-            if process is not None:
-                _terminate_process_group(process)
-                exit_code = process.returncode
-            else:
-                exit_code = None
-            return "interrupted", exit_code, "build interrupted by user"
-        except OSError as exc:
-            return "failed", None, f"cannot start build script: {exc}"
+    with debug_command(
+        "BUILD",
+        (script_path,),
+        cwd=algorithm_path,
+    ) as trace:
+        process: Optional[subprocess.Popen[bytes]] = None
+        streams = None
+        status = "failed"
+        exit_code: Optional[int] = None
+        failure_reason: Optional[str] = None
+        with stdout_path.open("wb") as stdout, stderr_path.open("wb") as stderr:
+            try:
+                stdout_target, stderr_target = process_output_targets(stdout, stderr)
+                process = subprocess.Popen(
+                    list(trace.argv),
+                    cwd=algorithm_path,
+                    stdin=subprocess.DEVNULL,
+                    stdout=stdout_target,
+                    stderr=stderr_target,
+                    start_new_session=True,
+                )
+                streams = start_process_streams(
+                    process,
+                    stdout,
+                    stderr,
+                    "BUILD",
+                )
+                try:
+                    exit_code = process.wait(timeout=timeout_seconds)
+                    if exit_code == 0:
+                        status = "success"
+                    else:
+                        failure_reason = f"build script exited with code {exit_code}"
+                except subprocess.TimeoutExpired:
+                    _terminate_process_group(process)
+                    exit_code = process.returncode
+                    status = "timeout"
+                    failure_reason = (
+                        f"build exceeded timeout of {timeout_seconds:g} seconds"
+                    )
+                except KeyboardInterrupt:
+                    _terminate_process_group(process)
+                    exit_code = process.returncode
+                    status = "interrupted"
+                    failure_reason = "build interrupted by user"
+                finally:
+                    finish_process_streams(streams)
+            except OSError as exc:
+                if process is not None:
+                    _terminate_process_group(process)
+                    exit_code = process.returncode
+                status = "failed"
+                failure_reason = f"cannot start build script: {exc}"
 
-    if exit_code != 0:
-        return "failed", exit_code, f"build script exited with code {exit_code}"
-    return "success", exit_code, None
+        return status, exit_code, failure_reason
 
 
 def _terminate_process_group(process: subprocess.Popen[bytes]) -> None:

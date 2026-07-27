@@ -246,6 +246,74 @@ compiler="${CC:-cc}"
         with self.assertRaisesRegex(ConfigError, "must be an absolute path"):
             load_build_config(relative)
 
+    def test_build_config_loads_optional_run_command_template(self) -> None:
+        config_path = self.root / "command-template.yaml"
+        template = [
+            "{executable}",
+            "--log={dataset_path}",
+            "--start_time={start_ts:.3f}",
+            "--end_time={end_ts:.3f}",
+        ]
+        template_text = (
+            '"{executable}" --log={dataset_path} '
+            "--start_time={start_ts:.3f} --end_time={end_ts:.3f}"
+        )
+        config_path.write_text(
+            yaml.safe_dump(
+                {
+                    "algorithm": "algorithm1",
+                    "build": {
+                        "algorithm_path": "/tmp/algorithm1",
+                        "script_path": "/tmp/algorithm1/build.sh",
+                    },
+                    "run": {"command_template": template_text},
+                },
+                sort_keys=False,
+            ),
+            encoding="utf-8",
+        )
+
+        config = load_build_config(config_path)
+
+        self.assertEqual(config.command_template, tuple(template))
+
+    def test_build_config_rejects_invalid_run_command_templates(self) -> None:
+        cases = (
+            (42, "must be a YAML string or list"),
+            ('"{executable}', "cannot parse"),
+            ([], "must not be empty"),
+            (["--log={dataset_path}"], "must start"),
+            (["{executable}"], "at least one argument"),
+            (
+                ["{executable}", "--log={dataset}"],
+                "unsupported placeholder",
+            ),
+            (
+                ["{executable}", "--log={dataset_path:.3f}"],
+                "only start_ts and end_ts",
+            ),
+        )
+        for index, (template, expected_error) in enumerate(cases):
+            with self.subTest(template=template):
+                config_path = self.root / f"invalid-template-{index}.yaml"
+                config_path.write_text(
+                    yaml.safe_dump(
+                        {
+                            "algorithm": "algorithm1",
+                            "build": {
+                                "algorithm_path": "/tmp/algorithm1",
+                                "script_path": "/tmp/algorithm1/build.sh",
+                            },
+                            "run": {"command_template": template},
+                        },
+                        sort_keys=False,
+                    ),
+                    encoding="utf-8",
+                )
+
+                with self.assertRaisesRegex(ConfigError, expected_error):
+                    load_build_config(config_path)
+
     def test_build_cli_writes_receipt_and_returns_success(self) -> None:
         if shutil.which("cc") is None:
             self.skipTest("a C compiler is required for mock algorithm fixtures")

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import os
+import shlex
 import signal
 import shutil
 import subprocess
@@ -10,6 +11,7 @@ import tempfile
 import time
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
+from dataclasses import replace
 from pathlib import Path
 from typing import Callable, Optional, Tuple
 
@@ -22,7 +24,7 @@ from slam_benchmark.execution.models import (
     FAILURE_POLICY_FAIL_FAST,
     RunRequest,
 )
-from slam_benchmark.execution.service import ExecutionService
+from slam_benchmark.execution.service import ExecutionError, ExecutionService
 from tests.test_dataset_manager import _write_dataset, _write_kitti_sequence
 
 FIXTURE_ROOT = Path(__file__).parent / "fixtures" / "mock_algorithms"
@@ -104,6 +106,99 @@ class ExecutionModuleTests(unittest.TestCase):
         self.assertIn(f"dataset_root={dataset}", output)
         self.assertTrue((result_dir / "calib_raw.yaml").is_file())
         self.assertFalse((result_dir / "home_point.txt").exists())
+
+    def test_configured_command_template_is_executed_and_frozen(self) -> None:
+        algorithm_root = self._copy_git_algorithm("algorithm2")
+        collection, dataset = self._create_collection(
+            "rk3399",
+            "configured-template",
+        )
+        template = (
+            "{executable}",
+            "--log={dataset_path}",
+            "--start_time={start_ts:.3f}",
+            "--end_time={end_ts:.3f}",
+            "--imu={imu_path}",
+            "--image={image_path}",
+            "--timestamps={image_timestamps_path}",
+            "--calibration={calibration_path}",
+        )
+        request = self._request(
+            "algorithm2",
+            algorithm_root,
+            collection,
+            "rk3399",
+        )
+        request = replace(
+            request,
+            build_config=replace(
+                request.build_config,
+                command_template=template,
+            ),
+        )
+
+        summary = ExecutionService().start(request)
+
+        self.assertEqual(summary.status, "success")
+        frozen = self._yaml(summary.result_root / "config" / "algorithm.yaml")
+        self.assertEqual(frozen["run"]["command_template"], list(template))
+        receipt = self._yaml(next(summary.result_root.glob("dataset/*/receipt.yaml")))
+        self.assertEqual(
+            receipt["command"][0], str(algorithm_root / "build/algorithm2")
+        )
+        self.assertEqual(receipt["command"][1], f"--log={dataset}")
+        self.assertTrue(receipt["command"][2].startswith("--start_time="))
+        self.assertTrue(receipt["command"][3].startswith("--end_time="))
+        self.assertTrue(receipt["command"][4].startswith("--imu="))
+
+    def test_command_template_renders_missing_optional_input_as_none(self) -> None:
+        algorithm_root = self._copy_git_algorithm("algorithm3")
+        collection, dataset = self._create_collection(
+            "kitti",
+            "configured-optional-input",
+        )
+        template = (
+            "{executable}",
+            "--dataset",
+            "{dataset_path}",
+            "--start",
+            "{start_ts:.6f}",
+            "--end",
+            "{end_ts:.6f}",
+            "--timestamps",
+            "{image_timestamps_path}",
+            "--calibration",
+            "{calibration_path}",
+            "--left-images",
+            "{left_image_dir}",
+            "--right-images",
+            "{right_image_dir}",
+            "--ground-truth",
+            "{ground_truth_path}",
+        )
+        request = self._request(
+            "algorithm3",
+            algorithm_root,
+            collection,
+            "kitti",
+        )
+        request = replace(
+            request,
+            build_config=replace(
+                request.build_config,
+                command_template=template,
+            ),
+        )
+
+        summary = ExecutionService().start(request)
+
+        self.assertEqual(summary.status, "success")
+        receipt_path = next(summary.result_root.glob("dataset/*/receipt.yaml"))
+        receipt = self._yaml(receipt_path)
+        self.assertEqual(receipt["command"][1:3], ["--dataset", str(dataset)])
+        self.assertEqual(receipt["command"][-2:], ["--ground-truth", "<none>"])
+        output = (receipt_path.parent / "mock_output.txt").read_text(encoding="utf-8")
+        self.assertIn("input.ground_truth_path=<none>\n", output)
 
     def test_default_mode_skips_failed_dataset_and_continues(self) -> None:
         algorithm_root = self._copy_git_algorithm(
@@ -537,6 +632,22 @@ class ExecutionModuleTests(unittest.TestCase):
         self.assertEqual(first.status, "failed")
         (algorithm_root / "allow_run").write_text("ready\n", encoding="utf-8")
 
+        changed_request = replace(
+            request,
+            build_config=replace(
+                request.build_config,
+                command_template=(
+                    "{executable}",
+                    "--log={dataset_path}",
+                ),
+            ),
+        )
+        with self.assertRaisesRegex(
+            ExecutionError,
+            "algorithm configuration or contract changed",
+        ):
+            service.resume(changed_request, first.result_root)
+
         resumed = service.resume(request, first.result_root)
 
         self.assertEqual(resumed.status, "success")
@@ -632,6 +743,120 @@ class ExecutionModuleTests(unittest.TestCase):
                 list((self.root / "result").glob("algorithm2/test-000/checkpoint.yaml"))
             ),
             1,
+        )
+
+    def test_cli_debug_prints_resolved_module_commands_and_outputs(self) -> None:
+        algorithm_root = self._copy_git_algorithm("algorithm2")
+        build_script = algorithm_root / "build.sh"
+        build_script.write_text(
+            build_script.read_text(encoding="utf-8")
+            + "\nprintf 'debug-build-stdout\\n'\n"
+            + "printf 'debug-build-stderr\\n' >&2\n",
+            encoding="utf-8",
+        )
+        collection, _ = self._create_collection("rk3399", "debug-cli-dataset")
+        algorithm_config = self.root / "debug algorithm config.yaml"
+        dataset_config = self.root / "debug dataset config.yaml"
+        algorithm_config.write_text(
+            yaml.safe_dump(
+                {
+                    "algorithm": "algorithm2",
+                    "build": {
+                        "algorithm_path": str(algorithm_root),
+                        "script_path": str(algorithm_root / "build.sh"),
+                    },
+                },
+                sort_keys=False,
+            ),
+            encoding="utf-8",
+        )
+        dataset_config.write_text(
+            yaml.safe_dump(
+                {
+                    "dataset": {
+                        "root_path": str(collection),
+                        "type": "rk3399",
+                    }
+                },
+                sort_keys=False,
+            ),
+            encoding="utf-8",
+        )
+        output = io.StringIO()
+        errors = io.StringIO()
+        previous_cwd = Path.cwd()
+        try:
+            os.chdir(self.root)
+            with redirect_stdout(output), redirect_stderr(errors):
+                exit_code = main(
+                    [
+                        "run",
+                        "--algorithm-config",
+                        str(algorithm_config),
+                        "--dataset-config",
+                        str(dataset_config),
+                        "--debug",
+                    ]
+                )
+        finally:
+            os.chdir(previous_cwd)
+
+        self.assertEqual(exit_code, 0)
+        self.assertIn("[SUCCESS]", output.getvalue())
+        debug_output = errors.getvalue()
+        for module in ("DATASET", "BUILD", "RUN"):
+            self.assertEqual(debug_output.count(f"[DEBUG][{module}][INPUT]"), 1)
+            self.assertEqual(debug_output.count(f"[DEBUG][{module}][OUTPUT]"), 1)
+        for hidden_module in (
+            "CONFIG_LOAD",
+            "PIPELINE_RUN",
+            "DATASET_DISCOVER",
+            "DATASET_REGISTER",
+            "GIT",
+            "RUN_RESOLVE",
+            "OUTPUT_VALIDATE",
+            "STORAGE_COPY",
+            "RUN_STORAGE_WRITE",
+        ):
+            self.assertNotIn(f"[DEBUG][{hidden_module}]", debug_output)
+        self.assertNotIn("[COMMAND]", debug_output)
+        self.assertIn("[DEBUG][RUN][STDOUT] algorithm=algorithm2", debug_output)
+        self.assertIn("algorithm=algorithm2", debug_output)
+        self.assertIn(
+            "[DEBUG][BUILD][STDOUT] debug-build-stdout",
+            debug_output,
+        )
+        self.assertIn(
+            "[DEBUG][BUILD][STDERR] debug-build-stderr",
+            debug_output,
+        )
+        result_root = self.root / "result" / "algorithm2" / "test-000"
+        self.assertEqual(
+            (result_root / "logs" / "build.stdout.log").read_text(encoding="utf-8"),
+            "debug-build-stdout\n",
+        )
+        self.assertEqual(
+            (result_root / "logs" / "build.stderr.log").read_text(encoding="utf-8"),
+            "debug-build-stderr\n",
+        )
+
+        receipt_path = next(result_root.glob("dataset/0/receipt.yaml"))
+        receipt = self._yaml(receipt_path)
+        self.assertIn(
+            f"command: {shlex.join(receipt['command'])}",
+            debug_output,
+        )
+        self.assertIn(str(result_root / "build_receipt.yaml"), debug_output)
+        self.assertIn(str(receipt_path), debug_output)
+        self.assertIn("saved:", debug_output)
+        self.assertEqual(
+            (receipt_path.parent / "stdout.log").read_text(encoding="utf-8"),
+            "\n".join(
+                line[len("[DEBUG][RUN][STDOUT] ") :]
+                for line in debug_output.splitlines()
+                if line.startswith("[DEBUG][RUN][STDOUT] ")
+            )
+            + "\n",
         )
 
     def test_cli_fail_fast_returns_error_after_first_algorithm_failure(self) -> None:

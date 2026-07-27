@@ -14,10 +14,17 @@ from typing import Any, Dict, Optional, Tuple
 
 from ..algorithms.contracts import AlgorithmContract
 from ..datasets.models import DatasetInstance, Segment
+from ..debug import (
+    debug_command,
+    finish_process_streams,
+    process_output_targets,
+    start_process_streams,
+)
 from .models import ProcessResult, ResolvedRunCommand
 
 _PROCESS_TERMINATION_GRACE_SECONDS = 2.0
 _MAX_MOCK_OUTPUT_BYTES = 10 * 1024 * 1024
+_MOCK_TIMESTAMP_TOLERANCE_SECONDS = 1e-3
 
 
 class RunnerError(Exception):
@@ -65,6 +72,27 @@ def run_process(
     if timeout_seconds <= 0:
         raise RunnerError("run timeout must be greater than zero")
 
+    with debug_command(
+        "RUN",
+        command.argv,
+        cwd=working_dir,
+    ) as trace:
+        return _execute_process(
+            trace.argv,
+            working_dir,
+            stdout_path,
+            stderr_path,
+            timeout_seconds,
+        )
+
+
+def _execute_process(
+    argv: Tuple[str, ...],
+    working_dir: Path,
+    stdout_path: Path,
+    stderr_path: Path,
+    timeout_seconds: float,
+) -> ProcessResult:
     try:
         stdout_path.parent.mkdir(parents=True, exist_ok=True)
         stderr_path.parent.mkdir(parents=True, exist_ok=True)
@@ -74,23 +102,33 @@ def run_process(
     started_at = _utc_now()
     started_clock = time.monotonic()
     process: Optional[subprocess.Popen[bytes]] = None
+    streams = None
     try:
         with stdout_path.open("wb") as stdout, stderr_path.open("wb") as stderr:
             try:
+                stdout_target, stderr_target = process_output_targets(stdout, stderr)
                 process = subprocess.Popen(
-                    list(command.argv),
+                    list(argv),
                     cwd=working_dir,
                     stdin=subprocess.DEVNULL,
-                    stdout=stdout,
-                    stderr=stderr,
+                    stdout=stdout_target,
+                    stderr=stderr_target,
                     start_new_session=True,
                 )
+                streams = start_process_streams(
+                    process,
+                    stdout,
+                    stderr,
+                    "RUN",
+                )
             except OSError as exc:
+                if process is not None:
+                    _terminate_process_group(process)
                 return _process_result(
                     "failed",
                     started_at,
                     started_clock,
-                    None,
+                    None if process is None else process.returncode,
                     f"cannot start algorithm: {exc}",
                 )
 
@@ -114,6 +152,8 @@ def run_process(
                     process.returncode,
                     "algorithm interrupted by user",
                 )
+            finally:
+                finish_process_streams(streams)
     except KeyboardInterrupt:
         if process is not None:
             _terminate_process_group(process)
@@ -261,13 +301,14 @@ def _validate_mock_key_value_output(
         "algorithm": contract.algorithm_id,
         "dataset_type": instance.dataset_type,
         "dataset_root": str(instance.root_path.resolve()),
-        "segment_start": command.argv[2],
-        "segment_end": command.argv[3],
         **{f"input.{role}": value for role, value in command.input_arguments},
     }
-    if actual != expected:
-        missing = sorted(set(expected) - set(actual))
-        extra = sorted(set(actual) - set(expected))
+    expected_keys = set(expected).union({"segment_start", "segment_end"})
+    if set(actual) != expected_keys or any(
+        actual.get(key) != value for key, value in expected.items()
+    ):
+        missing = sorted(expected_keys - set(actual))
+        extra = sorted(set(actual) - expected_keys)
         changed = sorted(
             key
             for key in set(actual).intersection(expected)
@@ -279,9 +320,19 @@ def _validate_mock_key_value_output(
         )
 
     try:
-        if float(actual["segment_start"]) != segment.start_timestamp:
+        if not math.isclose(
+            float(actual["segment_start"]),
+            segment.start_timestamp,
+            rel_tol=0.0,
+            abs_tol=_MOCK_TIMESTAMP_TOLERANCE_SECONDS,
+        ):
             return "mock output Segment start does not match"
-        if float(actual["segment_end"]) != segment.end_timestamp:
+        if not math.isclose(
+            float(actual["segment_end"]),
+            segment.end_timestamp,
+            rel_tol=0.0,
+            abs_tol=_MOCK_TIMESTAMP_TOLERANCE_SECONDS,
+        ):
             return "mock output Segment end does not match"
     except (KeyError, ValueError):
         return "mock output Segment timestamps are invalid"
@@ -333,10 +384,7 @@ def _validate_sf_vo_output(
                     return details, (
                         f"{path}:{line_number}: sf_vo timestamp exceeds Segment end"
                     )
-                if (
-                    previous_timestamp is not None
-                    and timestamp <= previous_timestamp
-                ):
+                if previous_timestamp is not None and timestamp <= previous_timestamp:
                     return details, (
                         f"{path}:{line_number}: sf_vo timestamps must be strictly increasing"
                     )

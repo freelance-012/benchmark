@@ -2,16 +2,18 @@
 
 from __future__ import annotations
 
+import shlex
 from pathlib import Path
-from typing import Any, Union
+from typing import Any, Dict, Optional, Tuple, Union
 
 import yaml
 
-from .algorithms.contracts import get_algorithm_contract
+from .algorithms.contracts import AlgorithmContract, get_algorithm_contract
 from .compilation.models import BuildConfig
 from .datasets.contracts import get_contract
 from .datasets.errors import ConfigError
 from .datasets.models import DatasetScanConfig
+from .execution.command import validate_command_template
 
 
 def load_dataset_config(config_path: Union[str, Path]) -> DatasetScanConfig:
@@ -83,11 +85,38 @@ def load_build_config(config_path: Union[str, Path]) -> BuildConfig:
     except KeyError as exc:
         raise ConfigError(f"missing build.{exc.args[0]}") from exc
 
+    command_template = _load_command_template(payload, contract)
     return BuildConfig(
         algorithm_id=contract.algorithm_id,
         algorithm_path=algorithm_path,
         script_path=script_path,
+        command_template=command_template,
     )
+
+
+def _load_command_template(
+    payload: Dict[str, Any],
+    contract: AlgorithmContract,
+) -> Optional[Tuple[str, ...]]:
+    run = payload.get("run")
+    if run is None:
+        return None
+    if not isinstance(run, dict):
+        raise ConfigError("run must be a mapping")
+    raw_template = run.get("command_template")
+    if raw_template is None:
+        return None
+    if isinstance(raw_template, str):
+        try:
+            raw_template = shlex.split(raw_template)
+        except ValueError as exc:
+            raise ConfigError(f"cannot parse run.command_template: {exc}") from exc
+    elif not isinstance(raw_template, list):
+        raise ConfigError("run.command_template must be a YAML string or list")
+    try:
+        return validate_command_template(raw_template, contract)
+    except ValueError as exc:
+        raise ConfigError(str(exc)) from exc
 
 
 def _absolute_config_path(value: Any, field: str) -> Path:

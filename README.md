@@ -19,7 +19,7 @@
 - 校验算法内置契约绑定的编译后运行入口；
 - 记录编译前后 Git 状态，并在 HEAD 或已跟踪源码发生变化时拒绝继续；
 - 原子保存 `build_receipt.yaml`；
-- 根据算法内置契约自动组合数据集路径、Segment 起止时间戳和固定输入路径；
+- 默认根据算法内置契约组合位置参数，也可由算法配置覆盖运行命令模板；
 - 串行运行每个有效 Segment，不生成新的运行脚本，也不通过 shell 解析参数；
 - 校验模拟算法固定输出并保存到当前数字 Segment 目录；
 - 保存 Segment 回执、日志、冻结配置和数据集级检查点；
@@ -145,6 +145,21 @@ build:
   script_path: /absolute/path/to/algorithm1/build.sh
 ```
 
+默认运行命令继续使用算法内置契约规定的位置参数顺序。只有算法要求不同的参数
+前缀或排列时，才增加可选的 `run.command_template`：
+
+```yaml
+run:
+  command_template: >-
+    "{executable}" --log={dataset_path}
+    --start_time={start_ts:.3f} --end_time={end_ts:.3f}
+```
+
+模板必须以 `{executable}` 开头，也可以改写为等价的 YAML 参数列表。可使用
+`{dataset_path}`、`{start_ts}`、`{end_ts}` 以及算法契约声明的输入角色，
+例如 `{imu_path}`。Pipeline 会先将模板规范化成参数列表，再直接执行，不通过
+shell 解析。模板引用的可选输入不存在时，对应参数值为 `<none>`。
+
 通用模拟算法示例见 `configs/algorithm.example.yaml`。工作目录固定为
 `build.algorithm_path`；运行入口由算法内置契约确定。当前
 `algorithm1` 是兼容 RK3588 和 RK3399 的 `sf_vo` 模拟算法；
@@ -237,6 +252,24 @@ benchmark dataset scan --config configs/dataset.example.yaml --refresh
 ```bash
 benchmark dataset list --config configs/dataset.example.yaml
 ```
+
+### Debug 模式
+
+在任意现有命令中加入 `--debug` 即可开启，例如：
+
+```bash
+benchmark dataset scan --config configs/dataset.example.yaml --debug
+
+benchmark run \
+  --algorithm-config /path/to/algorithm.yaml \
+  --dataset-config /path/to/dataset.yaml \
+  --debug
+```
+
+Debug 输出写到终端的标准错误流，不改变原有命令结果。终端只显示数据集、
+编译和运行三个主要模块，不展开 Git 查询、配置读取、文件复制和校验等内部
+步骤。每个模块只保留 Pipeline 最终组装的输入命令、实际标准输出与错误输出
+（如有）、执行状态，以及本次真正保存的结果文件。
 
 独立执行一次算法编译：
 
