@@ -182,6 +182,26 @@ _CONTRACTS = {
         fixed_output_relative_path=Path("f_vo.txt"),
         supported_dataset_types=("euroc",),
     ),
+    "orbslam3_mono_sf": AlgorithmContract(
+        algorithm_id="orbslam3_mono_sf",
+        display_name="ORB-SLAM3 Monocular SF VO (RK3399)",
+        contract_version=2,
+        entrypoint_relative_path=Path("Examples/Monocular/mono_sf"),
+        fixed_output_relative_path=Path("vo.txt"),
+        output_validator="sf_vo",
+        evaluation_workflow=EVALUATION_WORKFLOW_SF_VO,
+        dataset_run_contracts=(
+            DatasetRunContract(
+                dataset_type="rk3399",
+                required_input_roles=(
+                    "imu_path",
+                    "image_path",
+                    "image_timestamps_path",
+                    "calibration_path",
+                ),
+            ),
+        ),
+    ),
 }
 
 

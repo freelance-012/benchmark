@@ -10,4 +10,5 @@ dist/
 *.egg-info/
 /testdata/
 /result/
+/results/
 /configs/*.local.yaml

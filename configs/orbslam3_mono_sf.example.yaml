@@ -1,0 +1,5 @@
+algorithm: orbslam3_mono_sf
+
+build:
+  algorithm_path: /absolute/path/to/ORB_SLAM3
+  script_path: /absolute/path/to/ORB_SLAM3/local_scripts/build_mono_sf.sh

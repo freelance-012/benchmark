@@ -56,6 +56,33 @@ class AlgorithmContractTests(unittest.TestCase):
         self.assertEqual(contract.supported_dataset_types, ("euroc",))
         self.assertIn(contract.algorithm_id, supported_algorithm_ids())
 
+    def test_orbslam3_mono_sf_uses_rk3399_sf_vo_contract(self) -> None:
+        contract = get_algorithm_contract("orbslam3_mono_sf")
+
+        self.assertEqual(
+            contract.display_name,
+            "ORB-SLAM3 Monocular SF VO (RK3399)",
+        )
+        self.assertEqual(contract.contract_version, 2)
+        self.assertEqual(
+            contract.entrypoint_relative_path,
+            Path("Examples/Monocular/mono_sf"),
+        )
+        self.assertEqual(contract.fixed_output_relative_path, Path("vo.txt"))
+        self.assertEqual(contract.output_validator, "sf_vo")
+        self.assertEqual(contract.evaluation_workflow, "sf_vo")
+        self.assertEqual(contract.supported_dataset_types, ("rk3399",))
+        self.assertEqual(
+            contract.run_contract_for("rk3399").required_input_roles,
+            (
+                "imu_path",
+                "image_path",
+                "image_timestamps_path",
+                "calibration_path",
+            ),
+        )
+        self.assertIn(contract.algorithm_id, supported_algorithm_ids())
+
 
 if __name__ == "__main__":
     unittest.main()
