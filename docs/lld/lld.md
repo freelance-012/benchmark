@@ -374,7 +374,7 @@ Git 记录规则：
 
 - 进程失败、运行超时或必要输出无效属于算法失败；
 - 每个 Segment 只执行一次，失败时计一次 Segment 失败；
-- 默认采用“跳过并继续”模式：一个 Segment 失败后，将当前数据集标记为未运行成功，当前数据集剩余 Segment 标记为未运行，然后继续下一个数据集；
+- 默认采用“按 Segment 跳过并继续”模式：一个 Segment 失败后记录该 Segment 失败，继续当前数据集的下一个 Segment；当前数据集只要存在失败 Segment，数据集状态仍记为失败；
 - 用户可以在启动时显式启用 `--fail-fast`：数据集预检、命令组合或算法运行首次失败时，保存当前事实和检查点后立即返回错误，不再启动后续数据集；
 - 用户主动中断时两种模式都停止，不把人工中断当成算法失败；
 - 本次 run 使用已经冻结的算法失败阈值；系统默认值为 1，用户可在选择数据集或启动 run 时覆盖；
@@ -450,7 +450,7 @@ result/
             └── ...
 ```
 
-`ALGORITHM_ID` 就是算法名称，不拼接 hash。完整 commit、分支、dirty 状态和源码摘要保存在本次 `TEST_ID` 的冻结配置及构建回执中。全部有效 Segment 按稳定顺序从 0 开始预先编号；实际启动的 Segment 创建对应数字目录，被跳过的 Segment 不生成虚假目录，因此失败运行允许出现编号空缺。每份 Segment 回执仍保存原始 `dataset_id`、`segment_id` 和起止时间戳。数据集级运行状态集中写入 `checkpoint.yaml`，不再生成 `dataset_receipt.yaml`。
+`ALGORITHM_ID` 就是算法名称，不拼接 hash。完整 commit、分支、dirty 状态和源码摘要保存在本次 `TEST_ID` 的冻结配置及构建回执中。全部有效 Segment 按稳定顺序从 0 开始预先编号；默认模式下，成功或失败的 Segment 都创建对应数字目录并保存事实。只有首次失败退出、人工中断或不可恢复错误造成后续 Segment 未启动时，编号才允许出现空缺。每份 Segment 回执仍保存原始 `dataset_id`、`segment_id` 和起止时间戳。数据集级运行状态集中写入 `checkpoint.yaml`，不再生成 `dataset_receipt.yaml`。
 
 各阶段输出关系如下：
 

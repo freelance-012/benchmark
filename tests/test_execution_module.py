@@ -200,17 +200,17 @@ class ExecutionModuleTests(unittest.TestCase):
         output = (receipt_path.parent / "mock_output.txt").read_text(encoding="utf-8")
         self.assertIn("input.ground_truth_path=<none>\n", output)
 
-    def test_default_mode_skips_failed_dataset_and_continues(self) -> None:
+    def test_default_mode_continues_after_failed_segment(self) -> None:
         algorithm_root = self._copy_git_algorithm(
             "algorithm2",
-            _fail_for_bad_dataset,
+            _fail_first_segment_for_bad_dataset,
         )
         collection = self.root / "default-mode datasets"
         bad = self._create_sf_dataset(
             collection,
             "01-bad-dataset",
             "rk3399",
-            multiple_segments=True,
+            segment_count=3,
         )
         good = self._create_sf_dataset(
             collection,
@@ -226,18 +226,24 @@ class ExecutionModuleTests(unittest.TestCase):
         self.assertEqual(summary.successful_datasets, 1)
         self.assertEqual(summary.failed_datasets, 1)
         self.assertEqual(summary.algorithm_failure_count, 1)
-        self.assertEqual(summary.successful_segments, 1)
+        self.assertEqual(summary.successful_segments, 3)
         self.assertEqual(summary.failed_segments, 1)
-        self.assertEqual(summary.not_run_segments, 1)
+        self.assertEqual(summary.not_run_segments, 0)
         receipts = self._dataset_results(summary.result_root)
         by_path = {item["dataset_path"]: item for item in receipts}
         self.assertEqual(by_path[str(bad)]["status"], "failed")
-        self.assertEqual(len(by_path[str(bad)]["not_run_segment_ids"]), 1)
+        self.assertEqual(len(by_path[str(bad)]["successful_segment_ids"]), 2)
+        self.assertEqual(len(by_path[str(bad)]["failed_segment_ids"]), 1)
+        self.assertEqual(by_path[str(bad)]["not_run_segment_ids"], [])
         self.assertEqual(by_path[str(good)]["status"], "success")
         checkpoint = self._yaml(summary.result_root / "checkpoint.yaml")
         self.assertEqual(checkpoint["failure_policy"], "continue")
         self.assertEqual(checkpoint["next_dataset_index"], 2)
-        self.assertEqual(checkpoint["next_segment_index"], 3)
+        self.assertEqual(checkpoint["next_segment_index"], 4)
+        self.assertEqual(
+            len(list(summary.result_root.glob("dataset/*/receipt.yaml"))),
+            4,
+        )
         self.assertFalse(any(summary.result_root.rglob("dataset_receipt.yaml")))
 
     def test_multiple_successful_segments_have_isolated_results(self) -> None:
@@ -247,7 +253,7 @@ class ExecutionModuleTests(unittest.TestCase):
             collection,
             "two-segments",
             "rk3399",
-            multiple_segments=True,
+            segment_count=2,
         )
 
         summary = ExecutionService().start(
@@ -269,7 +275,7 @@ class ExecutionModuleTests(unittest.TestCase):
             collection,
             "two-segments",
             "rk3399",
-            multiple_segments=True,
+            segment_count=2,
         )
 
         summary = ExecutionService().start(
@@ -1082,13 +1088,15 @@ class ExecutionModuleTests(unittest.TestCase):
         name: str,
         dataset_type: str,
         *,
-        multiple_segments: bool = False,
+        segment_count: int = 1,
     ) -> Path:
         dataset = collection / name
-        if multiple_segments:
-            modes = [0] + [1] * 200 + [0] + [2] * 200 + [0]
-        else:
-            modes = [0] + [1] * 200 + [0]
+        if segment_count < 1:
+            raise ValueError("segment_count must be at least one")
+        modes = [0]
+        for mode in range(1, segment_count + 1):
+            modes.extend([mode] * 200)
+            modes.append(0)
         timestamps = [float(index) for index in range(len(modes))]
         _write_dataset(
             dataset,
@@ -1129,6 +1137,23 @@ def _fail_for_bad_dataset(source: str) -> str:
         '    FILE *output = fopen(OUTPUT_FILENAME, "w");',
         (
             '    if (strstr(argv[1], "bad-dataset") != NULL) {\n'
+            "        return 9;\n"
+            "    }\n\n"
+            '    FILE *output = fopen(OUTPUT_FILENAME, "w");'
+        ),
+    )
+
+
+def _fail_first_segment_for_bad_dataset(source: str) -> str:
+    source = source.replace(
+        "#include <stdlib.h>\n",
+        "#include <stdlib.h>\n#include <string.h>\n",
+    )
+    return source.replace(
+        '    FILE *output = fopen(OUTPUT_FILENAME, "w");',
+        (
+            '    if (strstr(argv[1], "bad-dataset") != NULL &&\n'
+            "        strtod(argv[2], NULL) < 100.0) {\n"
             "        return 9;\n"
             "    }\n\n"
             '    FILE *output = fopen(OUTPUT_FILENAME, "w");'

@@ -542,16 +542,20 @@ class ExecutionService:
                 continue
 
             failed.append(segment.segment_id)
-            not_run.extend(
-                item.segment_id for item in valid_segments[segment_index + 1 :]
-            )
             failure_reason = segment_failure
             if algorithm_failure:
                 algorithm_failure_count += 1
             dataset_status = (
                 "interrupted" if segment_status == "interrupted" else "failed"
             )
-            break
+            if (
+                segment_status == "interrupted"
+                or request.failure_policy == FAILURE_POLICY_FAIL_FAST
+            ):
+                not_run.extend(
+                    item.segment_id for item in valid_segments[segment_index + 1 :]
+                )
+                break
 
         return DatasetRunReceipt(
             test_id=test_root.name,

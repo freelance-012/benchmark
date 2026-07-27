@@ -23,7 +23,7 @@
 - 串行运行每个有效 Segment，不生成新的运行脚本，也不通过 shell 解析参数；
 - 校验模拟算法固定输出并保存到当前数字 Segment 目录；
 - 保存 Segment 回执、日志、冻结配置和数据集级检查点；
-- 默认跳过问题数据集并继续，也可使用 `--fail-fast` 在第一次失败时退出；
+- 默认记录失败 Segment 并继续后续 Segment，也可使用 `--fail-fast` 在第一次失败时退出；
 - 在上下文未变化时，从未完成的数据集恢复运行。
 
 暂未实现 EuRoC、voeval 自动评估、Excel 汇总、回归对比和最终报告。这些能力保留在总体设计中，后续按模块接入。
@@ -294,7 +294,7 @@ benchmark run \
   --dataset-path "/path/to/selected/dataset"
 ```
 
-默认模式遇到问题数据集时记录失败、跳过该数据集剩余 Segment，并继续下一个数据集。需要人工调试时使用首次失败立即退出模式：
+默认模式遇到某个 Segment 失败时只记录该 Segment，继续运行当前数据集的后续 Segment，当前数据集结束后再继续下一个数据集。需要人工调试时使用首次失败立即退出模式：
 
 ```bash
 benchmark run \
@@ -378,7 +378,7 @@ result/
 均由算法产生，不从数据集复制。
 RK3588 的 `front_calib_raw.yaml` 不进入评估目录。
 
-所有有效 Segment 按本次 run 的稳定顺序从 0 开始预先编号；实际启动过的 Segment 创建对应数字目录，因当前数据集失败而跳过的 Segment 保留编号但不创建虚假结果，所以异常运行中可能出现编号空缺。目录层级不再按数据集分组，但每个 `receipt.yaml` 仍记录原始数据集、Segment 和起止时间戳。数据集运行结果集中保存在 `checkpoint.yaml`，不再生成 `dataset_receipt.yaml`。
+所有有效 Segment 按本次 run 的稳定顺序从 0 开始预先编号；默认模式下，成功或失败的 Segment 都会创建对应数字目录并保存事实。只有 `--fail-fast`、人工中断或不可恢复错误使后续 Segment 未启动时，异常运行中才可能出现编号空缺。目录层级不再按数据集分组，但每个 `receipt.yaml` 仍记录原始数据集、Segment 和起止时间戳。数据集运行结果集中保存在 `checkpoint.yaml`，不再生成 `dataset_receipt.yaml`。
 
 恢复未完成的数据集时，仅清理该数据集尚未提交检查点的数字 Segment 目录并从该数据集起点重新运行；之前已经提交完成的数据集不重复运行。
 
@@ -429,7 +429,7 @@ ruff check src tests tools
 ruff format --check src tests tools
 ```
 
-`tests/fixtures/mock_algorithms/` 中的三个模拟算法会在临时 Git 仓库内编译，不会在源码目录留下构建产物。编译模块测试覆盖成功、非零退出、入口缺失、超时、路径越界、脚本不可执行、HEAD 变化和已跟踪源码变化。运行模块测试覆盖三个数据集类型、带空格路径、固定输入映射、默认跳过、`--fail-fast`、数据集选择、缺失输出、超时和检查点恢复。
+`tests/fixtures/mock_algorithms/` 中的三个模拟算法会在临时 Git 仓库内编译，不会在源码目录留下构建产物。编译模块测试覆盖成功、非零退出、入口缺失、超时、路径越界、脚本不可执行、HEAD 变化和已跟踪源码变化。运行模块测试覆盖三个数据集类型、带空格路径、固定输入映射、默认继续后续 Segment、`--fail-fast`、数据集选择、缺失输出、超时和检查点恢复。
 
 ### 数据集异常识别套件
 
