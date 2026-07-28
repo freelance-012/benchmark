@@ -18,6 +18,7 @@ import yaml
 from ..algorithms.contracts import AlgorithmContract
 from ..datasets.models import DatasetInstance, Segment
 from ..debug import (
+    OutputLineCallback,
     debug_command,
     finish_process_streams,
     process_output_targets,
@@ -196,6 +197,7 @@ def run_process(
     stdout_path: Path,
     stderr_path: Path,
     timeout_seconds: float,
+    output_line_callback: Optional[OutputLineCallback] = None,
 ) -> ProcessResult:
     if timeout_seconds <= 0:
         raise RunnerError("run timeout must be greater than zero")
@@ -211,6 +213,7 @@ def run_process(
             stdout_path,
             stderr_path,
             timeout_seconds,
+            output_line_callback,
         )
 
 
@@ -220,6 +223,7 @@ def _execute_process(
     stdout_path: Path,
     stderr_path: Path,
     timeout_seconds: float,
+    output_line_callback: Optional[OutputLineCallback],
 ) -> ProcessResult:
     try:
         stdout_path.parent.mkdir(parents=True, exist_ok=True)
@@ -234,7 +238,11 @@ def _execute_process(
     try:
         with stdout_path.open("wb") as stdout, stderr_path.open("wb") as stderr:
             try:
-                stdout_target, stderr_target = process_output_targets(stdout, stderr)
+                stdout_target, stderr_target = process_output_targets(
+                    stdout,
+                    stderr,
+                    stream_output=output_line_callback is not None,
+                )
                 process = subprocess.Popen(
                     list(argv),
                     cwd=working_dir,
@@ -248,6 +256,7 @@ def _execute_process(
                     stdout,
                     stderr,
                     "RUN",
+                    output_line_callback,
                 )
             except OSError as exc:
                 if process is not None:

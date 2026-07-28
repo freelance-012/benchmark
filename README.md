@@ -25,11 +25,12 @@
 - 保存 Segment 回执、日志、冻结配置和数据集级检查点；
 - 默认记录失败 Segment 并继续后续 Segment，也可使用 `--fail-fast` 在第一次失败时退出；
 - 在上下文未变化时，从未完成的数据集恢复运行；
-- 对运行成功的 SF VO、SF VLOC Segment 立即调用用户环境中的 `voeval`；
-- 保存 `metrics.json`、评估回执和 `voeval.log`；
-- 每个 Segment 形成状态后重建本次测试的单表 `run_summary.xlsx`。
+- 对绑定 SF VO 或 SF VLOC 评估工作流且运行成功的 Segment，立即调用用户环境中的 `voeval`；
+- 每次评估保存评估回执和 `voeval.log`；评估成功时保证 `metrics.json` 存在且有效，评估失败时不保证该文件存在或有效；
+- 仅对绑定评估工作流的算法，在每个 Segment 形成状态后重建本次测试的单表 `run_summary.xlsx`；
+- 在交互式终端显示各模块进度，并结合 Segment 时长和算法实时输出估算剩余时间。
 
-暂未实现 EuRoC 运行、回归对比和最终报告。这些能力保留在总体设计中，后续按模块接入。
+当前已注册真实 SF VO 输出契约 `orbslam3_mono_sf`；SF VLOC 的评估和汇总接口已经实现，但目前只有模拟算法用于验证流程，尚未接入真实 VLOC 算法。暂未实现 EuRoC 运行、回归对比和最终报告。
 
 ## 项目结构
 
@@ -56,6 +57,7 @@ benchmark/
 - Python 3.8 或更高版本；
 - PyYAML 6.x；
 - openpyxl 3.1.x；
+- Rich 13.7 至 14.x；
 - 用户环境中可直接执行的 `voeval` 命令。
 
 使用系统 Python 安装到当前用户目录，不创建或激活虚拟环境：
@@ -135,7 +137,7 @@ KITTI 左右图像文件名必须一致，并从 `000000.png` 连续编号；图
 
 RK3588 的前视和下视时间戳必须完全一致。系统同时校验两份文件，但只按一份同步时间戳计数，不把四路视频的帧数相加。当前 RK3399 数据处理器版本为 3，RK3588 为 4；旧实例 YAML 会在重新扫描时按新契约重建。
 
-数据集中的 `home_point.txt` 只作为可选数据记录，不再作为 VLOC 的运行或评估输入。VLOC 必须和轨迹一起输出本次运行自己的 `home_point.txt`。
+数据集管理不会录入或使用数据集中的 `home_point.txt`。VLOC 必须和轨迹一起输出本次运行自己的 `home_point.txt`。
 
 扫描过程不会修改 IMU、图像、时间戳或标定文件。系统只在扫描识别出的每个具体数据集根目录生成一份 `benchmark_dataset.yaml`，其中保存该数据集的输入路径和 Segment；算法适用性由系统根据输入文件和算法契约判断，不写入数据集配置。
 
@@ -179,7 +181,9 @@ shell 解析。模板引用的可选输入不存在时，对应参数值为 `<no
 `build.algorithm_path`；运行入口由算法内置契约确定。当前
 `algorithm1` 是兼容 RK3588 和 RK3399 的 `sf_vo` 模拟算法；
 `algorithm2` 是 RK3399 的 `sf_vloc` 模拟算法；`algorithm3` 是 KITTI
-模拟算法，暂未绑定 voeval 工作流。正式算法后续以相同契约接入。
+模拟算法，暂未绑定 voeval 工作流。`algorithm2` 只用于验证 VLOC 调用、
+双输出和汇总流程，输出的是 `mock_output.txt` 和 `home_point.txt`，不能代替
+真实算法所需的 `vloc.txt`。正式算法后续以相同契约接入。
 
 ORB-SLAM3 EuRoC 单目惯性编译使用
 `configs/orbslam3.example.yaml`，将其中两个路径替换为本机 ORB-SLAM3 Git
@@ -286,13 +290,37 @@ Debug 输出写到终端的标准错误流，不改变原有命令结果。终�
 等内部步骤。每个模块只保留 Pipeline 最终组装的输入命令或输入文件、实际
 标准输出与错误输出（如有）、执行状态，以及本次真正保存的结果文件。
 
-### 进度与 ETA
+### 运行进度与预计剩余时间
 
 在交互式终端执行 `benchmark run` 时，会持续显示总进度以及 `DATASET`、
 `BUILD`、`RUN`、`EVALUATE`、`REPORT` 五个模块的进度条。运行、评估和汇总
 按 Segment 分别推进；只有一个 Segment 的结果、评估和汇总均已保存后，
-总进度才会增加。ETA 根据本次已经完成的 Segment 耗时动态更新，因此第一个
-Segment 完成前显示为未知。
+总进度才会增加。
+
+`RUN` 开始时，系统根据本次全部 Segment 的起止时间戳计算待处理数据时长，
+初始按 1× 速度（1 秒数据约需 1 秒运行时间）估算“预计剩余”。算法运行期间，
+Pipeline 同时将标准输出和错误输出写入原有日志；如果当前算法契约绑定了进度
+解析器，还会解析当前时间戳、百分比、已处理帧数或 FPS，并据此更新当前 Segment
+百分比、处理速度和预计剩余时间。一个 Segment 成功结束后，实际数据时长与
+实际运行耗时还会用于修正后续 Segment 的估算。没有绑定解析器或没有可解析
+进度输出时，系统继续使用数据时长和已经完成的 Segment 速度估算，不影响算法
+运行。
+
+运行中的模块显示“预计剩余”；完成、失败、中断或跳过后不再显示剩余时间，
+实际耗时由耗时列保留。多路同步视频按同一个 Segment 时间范围计算，不将多路
+视频时长相加。
+
+算法需要实时更新进度时，由算法或算法适配入口逐行输出约定的进度事件，例如：
+
+```text
+BENCHMARK_PROGRESS {"timestamp":125.0,"percent":25.0,"fps":20.0}
+```
+
+输出行必须及时刷新，不能一直缓存在算法进程内部。进度解析器由算法内置契约
+绑定，不需要用户在运行 YAML 中增加配置；普通日志和无法识别的输出仍照常保存，
+不会导致本次算法运行失败。用户仍使用原有的 `benchmark run` 命令，无需增加
+进度或预计剩余时间参数。当前只有模拟算法 `algorithm1` 绑定了实时进度解析器；
+其他算法使用 Segment 时长和已完成 Segment 的实际速度估算。
 
 Debug 模式和非交互式输出不会显示动态进度条，避免进度刷新字符写入日志。
 命令结束后的成功或失败汇总保持不变。
@@ -378,28 +406,30 @@ result/
         │   └── build.stderr.log
         ├── build_receipt.yaml
         ├── checkpoint.yaml
-        ├── run_summary.xlsx
+        ├── run_summary.xlsx              # 仅绑定评估工作流且已进入汇总流程时生成
         └── dataset/
             ├── 0/
             │   ├── receipt.yaml
             │   ├── stdout.log
             │   ├── stderr.log
             │   ├── FIXED_OUTPUT
-            │   ├── CALIBRATION_FILE
-            │   ├── home_point.txt          # 仅 sf_vloc
+            │   ├── CALIBRATION_FILE         # 仅评估工作流需要
+            │   ├── home_point.txt           # 仅真实 sf_vloc 算法输出
             │   └── evaluation/
-            │       ├── metrics.json
-            │       ├── receipt.yaml
-            │       └── voeval.log
+            │       ├── metrics.json         # 评估成功时保证存在且有效
+            │       ├── receipt.yaml         # 执行评估后生成
+            │       └── voeval.log           # 执行评估后生成
             ├── 1/
             └── ...
 ```
 
 运行成功并完成输出复制后，系统立即以当前数字 Segment 目录作为
-`log_dir` 调用 PATH 中的 `voeval`，并在 `evaluation/` 中保存真实的
-`metrics.json`、`receipt.yaml` 和 `voeval.log`。评估失败不会增加算法
-失败次数，失败原因会写入评估回执和 `run_summary.xlsx`，随后继续处理
-下一个 Segment。
+`log_dir` 调用 PATH 中的 `voeval`。每次执行评估都会在 `evaluation/` 中
+保存 `receipt.yaml` 和 `voeval.log`；只有评估成功并产生合法指标时才保存
+有效的 `metrics.json`，评估失败时不保证该文件存在或有效。评估失败不会增加
+算法失败次数，失败原因会写入评估回执和
+`run_summary.xlsx`，随后继续处理下一个 Segment。未绑定评估工作流的算法
+不会调用 `voeval`，也不会生成 `run_summary.xlsx`。
 
 `run_summary.xlsx` 只有一个 `Summary` 工作表，第一列为运行编号，第二列
 为可点击的数字 Segment 结果路径。SF VO 汇总 100m RPE 平移误差的 RMSE、
@@ -411,17 +441,19 @@ Mean、Median、Max、Min、Count，以及断点切分后的 Segment 数量；SF
 运行成功后，系统按数据集契约把 voeval 使用的单份外参复制到
 当前数字 Segment 目录：RK3399 使用 `calib_raw.yaml`，RK3588 使用
 `bottom_calib_raw.yaml`。`sf_vloc` 的 `vloc.txt` 和 `home_point.txt`
-均由算法产生，不从数据集复制。
+均应由真实算法产生，不从数据集复制；当前模拟算法 `algorithm2` 不产生
+`vloc.txt`，不能用于验证真实 VLOC 指标。
 RK3588 的 `front_calib_raw.yaml` 不进入评估目录。
 
 所有有效 Segment 按本次 run 的稳定顺序从 0 开始预先编号；默认模式下，成功或失败的 Segment 都会创建对应数字目录并保存事实。只有 `--fail-fast`、人工中断或不可恢复错误使后续 Segment 未启动时，异常运行中才可能出现编号空缺。目录层级不再按数据集分组，但每个 `receipt.yaml` 仍记录原始数据集、Segment 和起止时间戳。数据集运行结果集中保存在 `checkpoint.yaml`，不再生成 `dataset_receipt.yaml`。
 
 恢复未完成的数据集时，仅清理该数据集尚未提交检查点的数字 Segment 目录并从该数据集起点重新运行；之前已经提交完成的数据集不重复运行。
 
-不安装本项目且不使用虚拟环境时，系统 Python 必须已经能够导入 PyYAML：
+不安装本项目且不使用虚拟环境时，系统 Python 必须已经能够导入 PyYAML、
+Rich 和 openpyxl：
 
 ```bash
-python3 -c "import yaml; print(yaml.__version__)"
+python3 -c "import yaml, rich, openpyxl; print('runtime dependencies OK')"
 ```
 
 然后从仓库根目录通过 `PYTHONPATH=src` 运行。例如扫描数据集：

@@ -9,7 +9,16 @@ import threading
 from contextlib import contextmanager
 from contextvars import ContextVar
 from pathlib import Path
-from typing import BinaryIO, Dict, Iterator, Mapping, Optional, Sequence, Tuple
+from typing import (
+    BinaryIO,
+    Callable,
+    Dict,
+    Iterator,
+    Mapping,
+    Optional,
+    Sequence,
+    Tuple,
+)
 
 _DEBUG_ENABLED: ContextVar[bool] = ContextVar(
     "slam_benchmark_debug_enabled",
@@ -24,6 +33,7 @@ _VISIBLE_MODULES = {
     "EVALUATE": "EVALUATE",
     "REPORT": "REPORT",
 }
+OutputLineCallback = Callable[[str, str], None]
 
 
 @contextmanager
@@ -111,10 +121,12 @@ def debug_input(module: str, **values: object) -> None:
 def process_output_targets(
     stdout: BinaryIO,
     stderr: BinaryIO,
+    *,
+    stream_output: bool = False,
 ) -> Tuple[object, object]:
-    """Use pipes only in debug mode so output can be teed to logs and terminal."""
+    """Use pipes when output must also be observed while preserving log files."""
 
-    if debug_enabled():
+    if debug_enabled() or stream_output:
         return subprocess.PIPE, subprocess.PIPE
     return stdout, stderr
 
@@ -136,22 +148,40 @@ def start_process_streams(
     stdout_log: BinaryIO,
     stderr_log: BinaryIO,
     module: str,
+    line_callback: Optional[OutputLineCallback] = None,
 ) -> Optional[DebugStreamSession]:
-    if not debug_enabled():
+    if not debug_enabled() and line_callback is None:
         return None
     if process.stdout is None or process.stderr is None:
         raise OSError("debug process pipes were not created")
 
     errors = []
+    emit_debug = debug_enabled()
     threads = (
         threading.Thread(
             target=_pump_process_stream,
-            args=(process.stdout, stdout_log, module, "STDOUT", errors),
+            args=(
+                process.stdout,
+                stdout_log,
+                module,
+                "STDOUT",
+                errors,
+                line_callback,
+                emit_debug,
+            ),
             daemon=True,
         ),
         threading.Thread(
             target=_pump_process_stream,
-            args=(process.stderr, stderr_log, module, "STDERR", errors),
+            args=(
+                process.stderr,
+                stderr_log,
+                module,
+                "STDERR",
+                errors,
+                line_callback,
+                emit_debug,
+            ),
             daemon=True,
         ),
     )
@@ -171,11 +201,14 @@ def _pump_process_stream(
     module: str,
     stream_name: str,
     errors: list,
+    line_callback: Optional[OutputLineCallback],
+    emit_debug: bool,
 ) -> None:
     pending = b""
     try:
         while True:
-            chunk = source.read(4096)
+            read = getattr(source, "read1", source.read)
+            chunk = read(4096)
             if not chunk:
                 break
             destination.write(chunk)
@@ -183,21 +216,41 @@ def _pump_process_stream(
             pending += chunk
             while b"\n" in pending:
                 raw_line, pending = pending.split(b"\n", 1)
+                line = raw_line.decode("utf-8", errors="replace")
+                _notify_output_line(line_callback, stream_name, line)
+                if emit_debug:
+                    _emit_stream_line(
+                        module,
+                        stream_name,
+                        line,
+                    )
+        if pending:
+            line = pending.decode("utf-8", errors="replace")
+            _notify_output_line(line_callback, stream_name, line)
+            if emit_debug:
                 _emit_stream_line(
                     module,
                     stream_name,
-                    raw_line.decode("utf-8", errors="replace"),
+                    line,
                 )
-        if pending:
-            _emit_stream_line(
-                module,
-                stream_name,
-                pending.decode("utf-8", errors="replace"),
-            )
     except BaseException as exc:  # pragma: no cover - defensive thread boundary
         errors.append(exc)
     finally:
         source.close()
+
+
+def _notify_output_line(
+    callback: Optional[OutputLineCallback],
+    stream_name: str,
+    line: str,
+) -> None:
+    if callback is None:
+        return
+    try:
+        callback(stream_name, line)
+    except Exception:
+        # Progress output is advisory. A malformed line must not fail the algorithm.
+        return
 
 
 def _display_module(module: str) -> Optional[str]:

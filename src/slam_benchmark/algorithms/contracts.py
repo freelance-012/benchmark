@@ -38,6 +38,7 @@ class AlgorithmContract:
     additional_output_relative_paths: Tuple[Path, ...] = ()
     numbered_output_counter_relative_path: Optional[Path] = None
     output_validator: str = "not_configured"
+    progress_parser: Optional[str] = None
     dataset_run_contracts: Tuple[DatasetRunContract, ...] = ()
     evaluation_workflow: Optional[str] = None
     supported_dataset_types: Tuple[str, ...] = ()
@@ -104,6 +105,8 @@ class AlgorithmContract:
             payload["numbered_output_counter_relative_path"] = str(
                 self.numbered_output_counter_relative_path
             )
+        if self.progress_parser is not None:
+            payload["progress_parser"] = self.progress_parser
         return payload
 
 
@@ -111,11 +114,12 @@ _CONTRACTS = {
     "algorithm1": AlgorithmContract(
         algorithm_id="algorithm1",
         display_name="Mock SF VO Algorithm",
-        contract_version=6,
+        contract_version=7,
         entrypoint_relative_path=Path("build/algorithm1"),
         fixed_output_relative_path=Path("mock_output.txt"),
         numbered_output_counter_relative_path=Path("counter.yaml"),
         output_validator="mock_key_value",
+        progress_parser="benchmark_json_v1",
         evaluation_workflow=EVALUATION_WORKFLOW_SF_VO,
         dataset_run_contracts=(
             DatasetRunContract(

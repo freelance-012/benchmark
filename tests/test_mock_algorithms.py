@@ -187,13 +187,25 @@ class MockAlgorithmTests(unittest.TestCase):
         ]
         expected = "\n".join(expected_lines) + "\n"
         if algorithm_id == "algorithm1":
+            start = float(start_text)
+            end = float(end_text)
+            progress_lines = [
+                (
+                    "BENCHMARK_PROGRESS "
+                    f'{{"timestamp":{start + (end - start) * step / 4:.6f},'
+                    f'"percent":{step * 25:.1f},"fps":30.0}}'
+                )
+                for step in range(5)
+            ]
             output_root = algorithm_root.parent / "algorithm1_output"
             counter_path = output_root / "counter.yaml"
             counter = yaml.safe_load(counter_path.read_text(encoding="utf-8"))
             output_index = counter["last_completed"]
             output = output_root / str(output_index) / "mock_output.txt"
             expected_stdout = (
-                expected
+                "\n".join(progress_lines)
+                + "\n"
+                + expected
                 + f"output_index={output_index}\n"
                 + f"output_directory=../algorithm1_output/{output_index}\n"
                 + "counter_path=../algorithm1_output/counter.yaml\n"

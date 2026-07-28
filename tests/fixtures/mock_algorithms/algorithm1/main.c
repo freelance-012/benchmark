@@ -27,6 +27,44 @@ static int emit(FILE *output, const char *key, const char *value) {
     return fprintf(output, "%s=%s\n", key, value) >= 0;
 }
 
+static unsigned int progress_delay_seconds(void) {
+    const char *text = getenv("BENCHMARK_MOCK_PROGRESS_DELAY_SECONDS");
+    char *end = NULL;
+    unsigned long value = 0;
+    if (text == NULL || *text == '\0') {
+        return 0;
+    }
+    errno = 0;
+    value = strtoul(text, &end, 10);
+    if (errno != 0 || end == text || *end != '\0' || value > 60) {
+        return 0;
+    }
+    return (unsigned int)value;
+}
+
+static int emit_progress(double start, double end) {
+    const int step_count = 4;
+    const unsigned int delay_seconds = progress_delay_seconds();
+    for (int step = 0; step <= step_count; ++step) {
+        const double fraction = (double)step / (double)step_count;
+        const double timestamp = start + (end - start) * fraction;
+        if (fprintf(
+                stdout,
+                "BENCHMARK_PROGRESS "
+                "{\"timestamp\":%.6f,\"percent\":%.1f,\"fps\":30.0}\n",
+                timestamp,
+                fraction * 100.0
+            ) < 0 ||
+            fflush(stdout) != 0) {
+            return 0;
+        }
+        if (delay_seconds > 0 && step < step_count) {
+            sleep(delay_seconds);
+        }
+    }
+    return 1;
+}
+
 static int ensure_directory(const char *path) {
     struct stat status;
 
@@ -167,6 +205,10 @@ int main(int argc, char **argv) {
     if (!parse_number(argv[2], &start) || !parse_number(argv[3], &end) || end < start) {
         fprintf(stderr, "invalid Segment timestamp range\n");
         return 3;
+    }
+    if (!emit_progress(start, end)) {
+        fprintf(stderr, "cannot emit algorithm progress\n");
+        return 5;
     }
 
     if (!ensure_directory(OUTPUT_ROOT)) {

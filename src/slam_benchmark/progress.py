@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import math
 import sys
+import time
 from contextlib import AbstractContextManager
-from datetime import timedelta
 from typing import IO, Dict, Iterable, Optional, Protocol, Type
 
 from rich.console import Console
@@ -80,6 +81,14 @@ class ProgressReporter(Protocol):
 
     def describe(self, module: str, detail: str) -> None: ...
 
+    def estimate(
+        self,
+        module: str,
+        *,
+        eta_seconds: float,
+        detail: str = "",
+    ) -> None: ...
+
     def advance(self, module: str, *, amount: int = 1, detail: str = "") -> None: ...
 
     def finish(
@@ -120,6 +129,15 @@ class NullProgressReporter:
     def describe(self, module: str, detail: str) -> None:
         del module, detail
 
+    def estimate(
+        self,
+        module: str,
+        *,
+        eta_seconds: float,
+        detail: str = "",
+    ) -> None:
+        del module, eta_seconds, detail
+
     def advance(self, module: str, *, amount: int = 1, detail: str = "") -> None:
         del module, amount, detail
 
@@ -137,19 +155,37 @@ class NullProgressReporter:
         return None
 
 
-class _EtaColumn(ProgressColumn):
-    """Render an explicit ETA label so the remaining time is unambiguous."""
+class _RemainingTimeColumn(ProgressColumn):
+    """Show estimated remaining time only while a module can still make progress."""
 
     def render(self, task: Task) -> Text:
-        remaining = task.time_remaining
-        if task.finished:
-            return Text("ETA 00:00:00")
+        state = str(task.fields.get("state", "waiting"))
+        if task.finished or state in {
+            "success",
+            "warning",
+            "failed",
+            "interrupted",
+            "skipped",
+        }:
+            return Text("")
+        explicit = task.fields.get("eta_seconds")
+        recorded_at = task.fields.get("eta_recorded_at")
+        if isinstance(explicit, (int, float)) and math.isfinite(explicit):
+            elapsed = (
+                max(0.0, time.monotonic() - recorded_at)
+                if isinstance(recorded_at, (int, float))
+                else 0.0
+            )
+            remaining = max(0.0, float(explicit) - elapsed)
+        else:
+            remaining = task.time_remaining
         if remaining is None:
-            return Text("ETA --:--:--", style="dim")
-        value = str(timedelta(seconds=max(0, int(remaining))))
-        if len(value.split(":")) == 2:
-            value = f"00:{value}"
-        return Text(f"ETA {value}")
+            return Text("预计剩余 --:--:--", style="dim")
+        total_seconds = max(0, int(math.ceil(remaining)))
+        hours, remainder = divmod(total_seconds, 60 * 60)
+        minutes, seconds = divmod(remainder, 60)
+        value = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+        return Text(f"预计剩余 {value}")
 
 
 class _StateColumn(ProgressColumn):
@@ -211,7 +247,7 @@ class TerminalProgress(AbstractContextManager["TerminalProgress"]):
             MofNCompleteColumn(),
             TaskProgressColumn(),
             TimeElapsedColumn(),
-            _EtaColumn(),
+            _RemainingTimeColumn(),
             _StateColumn(table_column=Column(ratio=1, overflow="ellipsis")),
             console=console,
             auto_refresh=auto_refresh,
@@ -233,6 +269,8 @@ class TerminalProgress(AbstractContextManager["TerminalProgress"]):
                 start=False,
                 state="waiting",
                 detail="",
+                eta_seconds=None,
+                eta_recorded_at=None,
             )
         self._progress.refresh()
         return self
@@ -269,6 +307,8 @@ class TerminalProgress(AbstractContextManager["TerminalProgress"]):
             completed=max(0, completed),
             state="waiting",
             detail=detail,
+            eta_seconds=None,
+            eta_recorded_at=None,
         )
 
     def begin(
@@ -288,6 +328,8 @@ class TerminalProgress(AbstractContextManager["TerminalProgress"]):
             completed=max(0, completed),
             state="running",
             detail=detail,
+            eta_seconds=None,
+            eta_recorded_at=None,
         )
         if module not in self._started:
             self._progress.start_task(task_id)
@@ -302,6 +344,26 @@ class TerminalProgress(AbstractContextManager["TerminalProgress"]):
             state="running",
             detail=detail,
         )
+
+    def estimate(
+        self,
+        module: str,
+        *,
+        eta_seconds: float,
+        detail: str = "",
+    ) -> None:
+        if not self.enabled:
+            return
+        if not math.isfinite(eta_seconds) or eta_seconds < 0:
+            return
+        values = {
+            "state": "running",
+            "eta_seconds": float(eta_seconds),
+            "eta_recorded_at": time.monotonic(),
+        }
+        if detail:
+            values["detail"] = detail
+        self._progress.update(self._task_id(module), **values)
 
     def advance(self, module: str, *, amount: int = 1, detail: str = "") -> None:
         if not self.enabled:
@@ -334,6 +396,8 @@ class TerminalProgress(AbstractContextManager["TerminalProgress"]):
         values = {
             "state": status,
             "detail": detail or str(task.fields.get("detail", "")),
+            "eta_seconds": 0.0,
+            "eta_recorded_at": time.monotonic(),
         }
         if complete:
             total = task.total

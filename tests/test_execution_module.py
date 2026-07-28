@@ -98,12 +98,13 @@ class ExecutionModuleTests(unittest.TestCase):
 
     def test_algorithm1_runs_rk3399_with_vo_contract(self) -> None:
         algorithm_root = self._copy_git_algorithm("algorithm1")
+        progress = _RecordingProgress()
         collection, dataset = self._create_collection(
             "rk3399",
             "algorithm1-rk3399-dataset",
         )
 
-        summary = ExecutionService().start(
+        summary = ExecutionService(progress=progress).start(
             self._request(
                 "algorithm1",
                 algorithm_root,
@@ -144,6 +145,14 @@ class ExecutionModuleTests(unittest.TestCase):
         self.assertEqual(
             frozen["run"]["output_root_path"],
             str(output_root),
+        )
+        stdout = (result_dir / "stdout.log").read_text(encoding="utf-8")
+        self.assertIn("BENCHMARK_PROGRESS ", stdout)
+        self.assertTrue(
+            any(
+                module == MODULE_RUN and "当前 25%" in detail
+                for module, _, detail in progress.estimates
+            )
         )
 
     def test_algorithm1_numbered_output_advances_for_each_segment(self) -> None:
@@ -1367,6 +1376,7 @@ print("integration voeval complete")
 class _RecordingProgress:
     def __init__(self) -> None:
         self.tasks = {}
+        self.estimates = []
 
     def prepare(
         self,
@@ -1400,6 +1410,16 @@ class _RecordingProgress:
 
     def describe(self, module: str, detail: str) -> None:
         self.tasks[module]["detail"] = detail
+
+    def estimate(
+        self,
+        module: str,
+        *,
+        eta_seconds: float,
+        detail: str = "",
+    ) -> None:
+        self.tasks[module]["detail"] = detail
+        self.estimates.append((module, eta_seconds, detail))
 
     def advance(self, module: str, *, amount: int = 1, detail: str = "") -> None:
         self.tasks[module]["completed"] += amount

@@ -59,6 +59,12 @@ from .runner import (
     validate_additional_output,
     validate_fixed_output,
 )
+from .runtime_progress import (
+    ProgressParser,
+    RunEtaEstimator,
+    RuntimeEstimate,
+    progress_parser as resolve_progress_parser,
+)
 from .storage import RunStorageError, RunStore
 
 
@@ -105,7 +111,11 @@ class ExecutionService:
 
         self._begin_pipeline_progress("准备并校验数据集")
         prepared = self._prepare_datasets(request, contract)
-        total_segments = len(_ordered_valid_segments(prepared.instances))
+        ordered_segments = _ordered_valid_segments(prepared.instances)
+        total_segments = len(ordered_segments)
+        eta_estimator = RunEtaEstimator(
+            tuple(segment for _, segment in ordered_segments)
+        )
         self._complete_dataset_progress(prepared)
         self._prepare_segment_progress(total_segments, completed=0)
         try:
@@ -234,6 +244,7 @@ class ExecutionService:
             build_receipt,
             test_root,
             checkpoint,
+            eta_estimator,
         )
 
     def resume(self, request: RunRequest, result_root: Path) -> RunSummary:
@@ -325,7 +336,11 @@ class ExecutionService:
         except RunStorageError as exc:
             raise ExecutionError(str(exc)) from exc
         self._update_summary(test_root, contract)
-        total_segments = len(_ordered_valid_segments(prepared.instances))
+        ordered_segments = _ordered_valid_segments(prepared.instances)
+        total_segments = len(ordered_segments)
+        eta_estimator = RunEtaEstimator(
+            tuple(segment for _, segment in ordered_segments)
+        )
         completed_segments = _completed_segment_count(checkpoint)
         self._prepare_segment_progress(
             total_segments,
@@ -352,6 +367,7 @@ class ExecutionService:
             build_receipt,
             test_root,
             checkpoint,
+            eta_estimator,
         )
 
     def _execute(
@@ -363,12 +379,15 @@ class ExecutionService:
         build_receipt: BuildReceipt,
         test_root: Path,
         checkpoint: RunCheckpoint,
+        eta_estimator: RunEtaEstimator,
     ) -> RunSummary:
         instance_by_id = {item.dataset_id: item for item in instances}
         ordered_instances = tuple(
             instance_by_id[dataset_id] for dataset_id in checkpoint.dataset_order
         )
         run_indexes_by_dataset = _dataset_run_indexes(ordered_instances)
+        output_parser = resolve_progress_parser(contract.progress_parser)
+        total_segments = len(_ordered_valid_segments(ordered_instances))
 
         for index in range(checkpoint.next_dataset_index, len(ordered_instances)):
             instance = ordered_instances[index]
@@ -386,6 +405,9 @@ class ExecutionService:
                     build_receipt,
                     test_root,
                     run_indexes,
+                    eta_estimator,
+                    output_parser,
+                    total_segments,
                 )
             except (BuildError, RunnerError, RunStorageError) as exc:
                 checkpoint = replace(
@@ -485,6 +507,9 @@ class ExecutionService:
         build_receipt: BuildReceipt,
         test_root: Path,
         run_indexes: Tuple[int, ...],
+        eta_estimator: RunEtaEstimator,
+        output_parser: Optional[ProgressParser],
+        total_segments: int,
     ) -> DatasetRunReceipt:
         valid_segments = tuple(
             sorted(
@@ -554,12 +579,47 @@ class ExecutionService:
                 test_root,
                 run_index,
             )
+            initial_estimate = eta_estimator.start_segment(run_index)
+            self._publish_runtime_estimate(
+                progress_detail,
+                run_index,
+                total_segments,
+                initial_estimate,
+            )
+
+            def observe_output(stream_name: str, line: str) -> None:
+                del stream_name
+                if output_parser is None:
+                    return
+                sample = output_parser(line)
+                if sample is None:
+                    return
+                estimate = eta_estimator.observe(sample)
+                if estimate is not None:
+                    self._publish_runtime_estimate(
+                        progress_detail,
+                        run_index,
+                        total_segments,
+                        estimate,
+                    )
+
             process = run_process(
                 command,
                 request.build_config.algorithm_path,
                 paths.stdout_path,
                 paths.stderr_path,
                 request.timeout_seconds,
+                observe_output,
+            )
+            remaining_estimate = eta_estimator.finish_segment(
+                successful=process.status == "success",
+                duration_seconds=process.duration_seconds,
+            )
+            self._publish_runtime_estimate(
+                progress_detail,
+                run_index,
+                total_segments,
+                remaining_estimate,
             )
 
             numbered_after: Optional[NumberedOutputSnapshot] = None
@@ -755,6 +815,28 @@ class ExecutionService:
             not_run_segment_ids=tuple(not_run),
             algorithm_failure_count=algorithm_failure_count,
             failure_reason=failure_reason,
+        )
+
+    def _publish_runtime_estimate(
+        self,
+        progress_detail: str,
+        run_index: int,
+        total_segments: int,
+        estimate: RuntimeEstimate,
+    ) -> None:
+        percent = min(100.0, max(0.0, estimate.fraction * 100.0))
+        self.progress.estimate(
+            MODULE_RUN,
+            eta_seconds=estimate.eta_seconds,
+            detail=(
+                f"{progress_detail}：当前 {percent:.0f}%，"
+                f"处理速度 {estimate.data_rate:.2f}×"
+            ),
+        )
+        self.progress.estimate(
+            MODULE_TOTAL,
+            eta_seconds=estimate.eta_seconds,
+            detail=(f"Segment {run_index + 1}/{total_segments}：当前 {percent:.0f}%"),
         )
 
     def _evaluate_and_update_summary(
