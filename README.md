@@ -392,10 +392,10 @@ result/
 
 `run_summary.xlsx` 只有一个 `Summary` 工作表，第一列为运行编号，第二列
 为可点击的数字 Segment 结果路径。SF VO 汇总 100m RPE 平移误差的 RMSE、
-Mean、Median、Max、Min 和 Count；SF VLOC 汇总轨迹长度以及水平位置、
-垂直位置和欧拉角的平均与最大误差。VLOC 的 `mean_error_pos_xy` 大于 20m
-时标黄，大于 50m 时标红。算法运行失败、评估失败和未运行 Segment 也保留
-一行，并显示运行状态、评估状态和失败原因。
+Mean、Median、Max、Min、Count，以及断点切分后的 Segment 数量；SF VLOC
+汇总轨迹长度以及水平位置、垂直位置和欧拉角的平均与最大误差。VLOC 的
+`mean_error_pos_xy` 大于 20m 时标黄，大于 50m 时标红。算法运行失败、
+评估失败和未运行 Segment 也保留一行，并显示运行状态、评估状态和失败原因。
 
 运行成功后，系统按数据集契约把 voeval 使用的单份外参复制到
 当前数字 Segment 目录：RK3399 使用 `calib_raw.yaml`，RK3588 使用

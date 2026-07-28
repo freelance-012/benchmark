@@ -24,7 +24,8 @@ from .models import EvaluationReceipt, EvaluationRequest
 
 DEFAULT_EVALUATION_TIMEOUT_SECONDS = 30 * 60.0
 RPE_DELTA_METERS = 100.0
-VO_METRIC_KEYS = ("rmse", "mean", "median", "max", "min", "count")
+VO_RPE_METRIC_KEYS = ("rmse", "mean", "median", "max", "min", "count")
+VO_METRIC_KEYS = VO_RPE_METRIC_KEYS + ("segment_count",)
 VLOC_METRIC_KEYS = (
     "trajectory_length_m",
     "mean_error_pos_xy",
@@ -240,7 +241,7 @@ def load_metrics(
 
     if workflow == EVALUATION_WORKFLOW_SF_VO:
         group_name = "rpe_translation_m"
-        metric_keys = VO_METRIC_KEYS
+        metric_keys = VO_RPE_METRIC_KEYS
         group = payload.get(group_name)
         if not isinstance(group, dict):
             raise EvaluationError(f"voeval metrics is missing {group_name}")
@@ -273,10 +274,15 @@ def load_metrics(
     else:
         raise EvaluationError(f"unsupported evaluation workflow: {workflow}")
 
-    invalid = tuple(
+    invalid = [
         key for key in metric_keys if _finite_number_or_none(group.get(key)) is None
-    )
-    return payload, invalid
+    ]
+    if (
+        workflow == EVALUATION_WORKFLOW_SF_VO
+        and _non_negative_integer_or_none(payload.get("segment_count")) is None
+    ):
+        invalid.append("segment_count")
+    return payload, tuple(invalid)
 
 
 def metric_values(
@@ -285,7 +291,7 @@ def metric_values(
 ) -> Tuple[Optional[float], ...]:
     if workflow == EVALUATION_WORKFLOW_SF_VO:
         group = metrics.get("rpe_translation_m")
-        keys = VO_METRIC_KEYS
+        keys = VO_RPE_METRIC_KEYS
     elif workflow == EVALUATION_WORKFLOW_SF_VLOC:
         group = metrics.get("vloc_metrics")
         keys = VLOC_METRIC_KEYS
@@ -293,7 +299,12 @@ def metric_values(
         raise EvaluationError(f"unsupported evaluation workflow: {workflow}")
     if not isinstance(group, Mapping):
         raise EvaluationError("voeval metrics group is not a JSON object")
-    return tuple(_finite_number_or_none(group.get(key)) for key in keys)
+    values = tuple(_finite_number_or_none(group.get(key)) for key in keys)
+    if workflow == EVALUATION_WORKFLOW_SF_VO:
+        return values + (
+            _non_negative_integer_or_none(metrics.get("segment_count")),
+        )
+    return values
 
 
 def _finite_number_or_none(value: Any) -> Optional[float]:
@@ -304,6 +315,13 @@ def _finite_number_or_none(value: Any) -> Optional[float]:
     except (TypeError, ValueError):
         return None
     return number if math.isfinite(number) else None
+
+
+def _non_negative_integer_or_none(value: Any) -> Optional[float]:
+    number = _finite_number_or_none(value)
+    if number is None or number < 0 or not number.is_integer():
+        return None
+    return number
 
 
 def _save_yaml_atomic(path: Path, payload: Mapping[str, Any]) -> None:

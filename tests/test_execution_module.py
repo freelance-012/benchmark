@@ -572,6 +572,7 @@ output.write_text(json.dumps({
         "min": 1.0,
         "count": 20,
     },
+    "segment_count": 2,
 }), encoding="utf-8")
 print("integration voeval complete")
 """,
@@ -604,8 +605,9 @@ print("integration voeval complete")
         sheet = workbook["Summary"]
         self.assertEqual(sheet["C3"].value, 1.1)
         self.assertEqual(sheet["H3"].value, 20)
-        self.assertEqual(sheet["I3"].value, "success")
+        self.assertEqual(sheet["I3"].value, 2)
         self.assertEqual(sheet["J3"].value, "success")
+        self.assertEqual(sheet["K3"].value, "success")
 
     def test_sf_vloc_requires_algorithm_home_point_output(self) -> None:
         algorithm_root = self._copy_git_algorithm(

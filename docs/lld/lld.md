@@ -569,7 +569,7 @@ Pipeline 为每个 run 维护一份单工作表的 `run_summary.xlsx`。每个 S
 
 `Summary` 工作表第一列为从 0 开始的运行编号，第二列为可点击的 Segment 结果目录，指标列之后保存运行状态、评估状态和失败原因。算法失败、评估失败和未运行 Segment 都保留一行，失效指标留空。
 
-- SF VO 只汇总 `RPE 平移误差 (delta=100.0m)` 的 RMSE、Mean、Median、Max、Min 和 Count；
+- SF VO 汇总 `RPE 平移误差 (delta=100.0m)` 的 RMSE、Mean、Median、Max、Min、Count，以及断点切分后实际进入评估的 Segment 数量；
 - SF VLOC 汇总 `trajectory_length_m`、`mean_error_pos_xy`、`mean_error_pos_z`、`mean_error_euler`、`max_error_pos_xy`、`max_error_pos_z` 和 `max_error_euler`；
 - SF VLOC 的 `mean_error_pos_xy` 大于 20m 且不超过 50m 时标黄，大于 50m 时标红；等于 20m 时不着色，等于 50m 时标黄。
 

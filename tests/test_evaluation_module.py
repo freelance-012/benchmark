@@ -64,9 +64,11 @@ class EvaluationModuleTests(unittest.TestCase):
             [sheet.cell(row=3, column=column).value for column in range(3, 9)],
             [1, 2, 3, 4, 0.5, 6],
         )
-        self.assertEqual(sheet["I3"].value, "success")
+        self.assertEqual(sheet["I1"].value, "Segment 数量")
+        self.assertEqual(sheet["I3"].value, 3)
         self.assertEqual(sheet["J3"].value, "success")
-        self.assertIsNone(sheet["K3"].value)
+        self.assertEqual(sheet["K3"].value, "success")
+        self.assertIsNone(sheet["L3"].value)
 
     def test_sf_vloc_colors_horizontal_error_and_keeps_failed_run(self) -> None:
         self._freeze_segment_order(6)
@@ -142,9 +144,9 @@ class EvaluationModuleTests(unittest.TestCase):
         workbook = load_workbook(workbook_path)
         self.addCleanup(workbook.close)
         sheet = workbook["Summary"]
-        self.assertEqual(sheet["I3"].value, "success")
-        self.assertEqual(sheet["J3"].value, "failed")
-        self.assertIn("code 7", sheet["K3"].value)
+        self.assertEqual(sheet["J3"].value, "success")
+        self.assertEqual(sheet["K3"].value, "failed")
+        self.assertIn("code 7", sheet["L3"].value)
         self.assertIsNone(sheet["C3"].value)
 
     def test_summary_lists_planned_but_not_run_segment(self) -> None:
@@ -157,11 +159,11 @@ class EvaluationModuleTests(unittest.TestCase):
         self.addCleanup(workbook.close)
         sheet = workbook["Summary"]
         self.assertEqual(sheet["A3"].value, 0)
-        self.assertEqual(sheet["I3"].value, "failed")
-        self.assertEqual(sheet["J3"].value, "not_run")
+        self.assertEqual(sheet["J3"].value, "failed")
+        self.assertEqual(sheet["K3"].value, "not_run")
         self.assertEqual(sheet["A4"].value, 1)
-        self.assertEqual(sheet["I4"].value, "not_run")
         self.assertEqual(sheet["J4"].value, "not_run")
+        self.assertEqual(sheet["K4"].value, "not_run")
 
     def _freeze_segment_order(self, count: int) -> None:
         (self.test_root / "config" / "run.yaml").write_text(
@@ -259,6 +261,7 @@ if mode == "sf_vo":
             "min": 0.5,
             "count": 6,
         },
+        "segment_count": 3,
     }
 else:
     horizontal = (10.0, 20.0, 25.0, 50.0, 55.0)[run_index]

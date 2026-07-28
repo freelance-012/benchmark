@@ -169,12 +169,14 @@ class SummaryWorkbookWriter:
             sheet.merge_cells("A1:A2")
             sheet.merge_cells("B1:B2")
             sheet.merge_cells("C1:H1")
+            sheet.merge_cells("I1:I2")
             sheet["A1"] = "运行编号"
             sheet["B1"] = "路径"
             sheet["C1"] = "RPE 平移误差 (delta=100.0m)"
+            sheet["I1"] = "Segment 数量"
             for column, title in enumerate(metric_titles, start=3):
                 sheet.cell(row=2, column=column, value=title)
-            status_column = 9
+            status_column = 10
             data_start_row = 3
             for column, title in enumerate(
                 ("运行状态", "评估状态", "失败原因"),
@@ -232,10 +234,8 @@ class SummaryWorkbookWriter:
             for metric_offset, value in enumerate(summary.metrics, start=3):
                 cell = sheet.cell(row=row_number, column=metric_offset, value=value)
                 if value is not None:
-                    if (
-                        workflow == EVALUATION_WORKFLOW_SF_VO
-                        and metric_offset == 8
-                    ):
+                    metric_key = metric_keys[metric_offset - 3]
+                    if metric_key in {"count", "segment_count"}:
                         cell.number_format = "0"
                     else:
                         cell.number_format = "0.000000"
