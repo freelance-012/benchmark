@@ -23,6 +23,16 @@ from ..evaluation import (
     EvaluationService,
     SummaryWorkbookWriter,
 )
+from ..progress import (
+    MODULE_BUILD,
+    MODULE_DATASET,
+    MODULE_EVALUATE,
+    MODULE_REPORT,
+    MODULE_RUN,
+    MODULE_TOTAL,
+    NullProgressReporter,
+    ProgressReporter,
+)
 from .command import CommandError, build_run_command
 from .models import (
     FAILURE_POLICIES,
@@ -69,11 +79,13 @@ class ExecutionService:
         build_store: Optional[BuildReceiptStore] = None,
         evaluation_service: Optional[EvaluationService] = None,
         summary_writer: Optional[SummaryWorkbookWriter] = None,
+        progress: Optional[ProgressReporter] = None,
     ):
         self.store = store or RunStore()
         self.build_store = build_store or BuildReceiptStore()
         self.evaluation_service = evaluation_service or EvaluationService()
         self.summary_writer = summary_writer or SummaryWorkbookWriter()
+        self.progress = progress or NullProgressReporter()
 
     def start(self, request: RunRequest) -> RunSummary:
         self._validate_request(request)
@@ -91,7 +103,11 @@ class ExecutionService:
         except BuildError as exc:
             raise ExecutionError(str(exc)) from exc
 
+        self._begin_pipeline_progress("准备并校验数据集")
         prepared = self._prepare_datasets(request, contract)
+        total_segments = len(_ordered_valid_segments(prepared.instances))
+        self._complete_dataset_progress(prepared)
+        self._prepare_segment_progress(total_segments, completed=0)
         try:
             self.store.freeze_configuration(
                 test_root,
@@ -134,6 +150,10 @@ class ExecutionService:
                 ),
             )
             self._save_checkpoint(test_root, checkpoint)
+            self._finish_before_execution(
+                checkpoint.failure_reason or "数据集预检失败",
+                build_started=False,
+            )
             return self._summarize(test_root, checkpoint)
 
         if not prepared.instances:
@@ -144,11 +164,25 @@ class ExecutionService:
                 failure_reason="no runnable datasets were selected",
             )
             self._save_checkpoint(test_root, checkpoint)
+            self._finish_before_execution(
+                checkpoint.failure_reason or "没有可运行数据集",
+                build_started=False,
+            )
             return self._summarize(test_root, checkpoint)
 
+        self.progress.begin(
+            MODULE_BUILD,
+            detail=f"执行 {request.build_config.script_path.name}",
+        )
         build_receipt = build_service.build(
             test_root,
             expected_commit=allocated_git.commit,
+        )
+        self.progress.finish(
+            MODULE_BUILD,
+            status=_progress_status(build_receipt.status),
+            detail=f"耗时 {build_receipt.duration_seconds:.1f}s",
+            complete=True,
         )
         if build_receipt.status != "success":
             checkpoint = replace(
@@ -160,11 +194,21 @@ class ExecutionService:
                 ),
             )
             self._save_checkpoint(test_root, checkpoint)
+            self._finish_before_execution(
+                checkpoint.failure_reason or "算法构建失败",
+                build_started=True,
+            )
             return self._summarize(test_root, checkpoint)
 
         try:
             build_service.verify_runtime_context(build_receipt)
         except BuildError as exc:
+            self.progress.finish(
+                MODULE_BUILD,
+                status="failed",
+                detail=str(exc),
+                complete=True,
+            )
             checkpoint = replace(
                 checkpoint,
                 status="failed",
@@ -172,10 +216,16 @@ class ExecutionService:
                 failure_reason=str(exc),
             )
             self._save_checkpoint(test_root, checkpoint)
+            self._finish_before_execution(str(exc), build_started=True)
             return self._summarize(test_root, checkpoint)
 
         checkpoint = replace(checkpoint, status="running", updated_at=_utc_now())
         self._save_checkpoint(test_root, checkpoint)
+        self._begin_segment_progress(
+            contract,
+            total_segments,
+            completed=0,
+        )
         return self._execute(
             request,
             contract,
@@ -219,7 +269,9 @@ class ExecutionService:
             frozen_run,
         )
 
+        self._begin_pipeline_progress("重新校验数据集")
         prepared = self._prepare_datasets(request, contract)
+        self._complete_dataset_progress(prepared)
         self._verify_frozen_datasets(
             test_root,
             checkpoint,
@@ -227,6 +279,7 @@ class ExecutionService:
             frozen_run,
         )
 
+        self.progress.begin(MODULE_BUILD, detail="校验并复用已有构建")
         try:
             build_receipt = self.build_store.load(test_root / "build_receipt.yaml")
         except RuntimeError as exc:
@@ -242,9 +295,21 @@ class ExecutionService:
         try:
             build_service.verify_runtime_context(build_receipt)
         except BuildError as exc:
+            self.progress.finish(
+                MODULE_BUILD,
+                status="failed",
+                detail=str(exc),
+                complete=True,
+            )
             raise ExecutionError(
                 f"cannot resume because build context changed: {exc}"
             ) from exc
+        self.progress.finish(
+            MODULE_BUILD,
+            status="success",
+            detail="复用已有构建",
+            complete=True,
+        )
 
         current_dataset_id = checkpoint.dataset_order[checkpoint.next_dataset_index]
         run_indexes_by_dataset = _dataset_run_indexes(prepared.instances)
@@ -260,6 +325,12 @@ class ExecutionService:
         except RunStorageError as exc:
             raise ExecutionError(str(exc)) from exc
         self._update_summary(test_root, contract)
+        total_segments = len(_ordered_valid_segments(prepared.instances))
+        completed_segments = _completed_segment_count(checkpoint)
+        self._prepare_segment_progress(
+            total_segments,
+            completed=completed_segments,
+        )
 
         checkpoint = replace(
             checkpoint,
@@ -268,6 +339,11 @@ class ExecutionService:
             failure_reason=None,
         )
         self._save_checkpoint(test_root, checkpoint)
+        self._begin_segment_progress(
+            contract,
+            total_segments,
+            completed=completed_segments,
+        )
         return self._execute(
             request,
             contract,
@@ -321,6 +397,7 @@ class ExecutionService:
                     failure_reason=str(exc),
                 )
                 self._save_checkpoint(test_root, checkpoint)
+                self._finish_execution_progress(contract, checkpoint)
                 return self._summarize(test_root, checkpoint)
 
             dataset_results = checkpoint.dataset_results + (dataset_receipt,)
@@ -341,6 +418,7 @@ class ExecutionService:
                     failure_reason=dataset_receipt.failure_reason,
                 )
                 self._save_checkpoint(test_root, checkpoint)
+                self._finish_execution_progress(contract, checkpoint)
                 return self._summarize(test_root, checkpoint)
 
             if (
@@ -358,6 +436,7 @@ class ExecutionService:
                     failure_reason=dataset_receipt.failure_reason,
                 )
                 self._save_checkpoint(test_root, checkpoint)
+                self._finish_execution_progress(contract, checkpoint)
                 return self._summarize(test_root, checkpoint)
 
             checkpoint = replace(
@@ -393,6 +472,7 @@ class ExecutionService:
             failure_reason=final_reason,
         )
         self._save_checkpoint(test_root, checkpoint)
+        self._finish_execution_progress(contract, checkpoint)
         return self._summarize(test_root, checkpoint)
 
     def _run_dataset(
@@ -425,6 +505,8 @@ class ExecutionService:
 
         for segment_index, segment in enumerate(valid_segments):
             run_index = run_indexes[segment_index]
+            progress_detail = _segment_progress_detail(instance, segment)
+            self.progress.describe(MODULE_RUN, progress_detail)
             entrypoint = build_service.verify_runtime_context(build_receipt)
             try:
                 command = build_run_command(
@@ -441,6 +523,10 @@ class ExecutionService:
                 )
                 failure_reason = str(exc)
                 dataset_status = "failed"
+                self.progress.describe(
+                    MODULE_RUN,
+                    f"{progress_detail}：命令生成失败",
+                )
                 break
 
             numbered_before: Optional[NumberedOutputSnapshot] = None
@@ -588,6 +674,10 @@ class ExecutionService:
                         )
                         self.store.save_segment_receipt(paths, receipt)
                         _debug_run_output(paths, receipt)
+                        self.progress.advance(
+                            MODULE_RUN,
+                            detail=f"{progress_detail}：{segment_status}",
+                        )
                         raise
 
             receipt = self._segment_receipt(
@@ -611,15 +701,17 @@ class ExecutionService:
             )
             self.store.save_segment_receipt(paths, receipt)
             _debug_run_output(paths, receipt)
-            evaluation_status, evaluation_failure = (
-                self._evaluate_and_update_summary(
-                    contract,
-                    instance,
-                    segment,
-                    paths,
-                    receipt,
-                    test_root,
-                )
+            self.progress.advance(
+                MODULE_RUN,
+                detail=f"{progress_detail}：{segment_status}",
+            )
+            evaluation_status, evaluation_failure = self._evaluate_and_update_summary(
+                contract,
+                instance,
+                segment,
+                paths,
+                receipt,
+                test_root,
             )
             if evaluation_status == "interrupted":
                 successful.append(segment.segment_id)
@@ -675,11 +767,17 @@ class ExecutionService:
         test_root: Path,
     ) -> Tuple[Optional[str], Optional[str]]:
         workflow = contract.evaluation_workflow
+        progress_detail = _segment_progress_detail(instance, segment)
         if workflow is None:
+            self.progress.advance(
+                MODULE_TOTAL,
+                detail=f"{progress_detail}：结果已保存",
+            )
             return None, None
         evaluation_status = "not_run"
         evaluation_failure: Optional[str] = None
         if run_receipt.status == "success":
+            self.progress.describe(MODULE_EVALUATE, progress_detail)
             try:
                 evaluation_receipt = self.evaluation_service.evaluate(
                     EvaluationRequest(
@@ -696,10 +794,30 @@ class ExecutionService:
                     )
                 )
             except EvaluationError as exc:
+                self.progress.describe(
+                    MODULE_EVALUATE,
+                    f"{progress_detail}：评估保存失败",
+                )
                 raise RunStorageError(str(exc)) from exc
             evaluation_status = evaluation_receipt.status
             evaluation_failure = evaluation_receipt.failure_reason
+            evaluation_detail = f"{progress_detail}：{evaluation_status}"
+        else:
+            evaluation_detail = f"{progress_detail}：跳过"
+        self.progress.advance(
+            MODULE_EVALUATE,
+            detail=evaluation_detail,
+        )
+        self.progress.describe(MODULE_REPORT, progress_detail)
         self._update_summary(test_root, contract)
+        self.progress.advance(
+            MODULE_REPORT,
+            detail=f"{progress_detail}：已更新",
+        )
+        self.progress.advance(
+            MODULE_TOTAL,
+            detail=f"{progress_detail}：全部保存",
+        )
         return evaluation_status, evaluation_failure
 
     def _update_summary(
@@ -714,6 +832,185 @@ class ExecutionService:
             self.summary_writer.update(test_root, workflow)
         except EvaluationError as exc:
             raise RunStorageError(str(exc)) from exc
+
+    def _begin_pipeline_progress(self, dataset_detail: str) -> None:
+        self.progress.begin(
+            MODULE_TOTAL,
+            detail="准备本次测试",
+        )
+        self.progress.begin(
+            MODULE_DATASET,
+            detail=dataset_detail,
+        )
+        self.progress.prepare(
+            MODULE_BUILD,
+            total=1,
+            detail="等待数据集检查",
+        )
+        for module in (MODULE_RUN, MODULE_EVALUATE, MODULE_REPORT):
+            self.progress.prepare(
+                module,
+                total=0,
+                detail="等待",
+            )
+
+    def _complete_dataset_progress(self, prepared: _PreparedDatasets) -> None:
+        dataset_count = len(prepared.instances)
+        issue_count = len(prepared.issues)
+        handled_count = max(1, dataset_count + issue_count)
+        self.progress.prepare(
+            MODULE_DATASET,
+            total=handled_count,
+            completed=handled_count,
+            detail=f"可运行 {dataset_count}，异常 {issue_count}",
+        )
+        if issue_count and not dataset_count:
+            status = "failed"
+        elif issue_count:
+            status = "warning"
+        else:
+            status = "success"
+        self.progress.finish(
+            MODULE_DATASET,
+            status=status,
+            detail=f"可运行 {dataset_count}，异常 {issue_count}",
+        )
+
+    def _prepare_segment_progress(
+        self,
+        total: int,
+        *,
+        completed: int,
+    ) -> None:
+        display_total = max(1, total)
+        display_completed = min(max(0, completed), display_total)
+        self.progress.begin(
+            MODULE_TOTAL,
+            total=display_total,
+            completed=display_completed,
+            detail=f"{completed}/{total} 个 Segment 已完成",
+        )
+        for module in (MODULE_RUN, MODULE_EVALUATE, MODULE_REPORT):
+            self.progress.prepare(
+                module,
+                total=display_total,
+                completed=display_completed,
+                detail=f"{completed}/{total} 个 Segment 已处理",
+            )
+
+    def _begin_segment_progress(
+        self,
+        contract: AlgorithmContract,
+        total: int,
+        *,
+        completed: int,
+    ) -> None:
+        display_total = max(1, total)
+        display_completed = min(max(0, completed), display_total)
+        self.progress.begin(
+            MODULE_RUN,
+            total=display_total,
+            completed=display_completed,
+            detail="等待下一个 Segment",
+        )
+        if contract.evaluation_workflow is None:
+            for module in (MODULE_EVALUATE, MODULE_REPORT):
+                self.progress.finish(
+                    module,
+                    status="skipped",
+                    detail="算法未配置评估流程",
+                    complete=True,
+                )
+            return
+        self.progress.begin(
+            MODULE_EVALUATE,
+            total=display_total,
+            completed=display_completed,
+            detail="等待运行结果",
+        )
+        self.progress.begin(
+            MODULE_REPORT,
+            total=display_total,
+            completed=display_completed,
+            detail="等待评估结果",
+        )
+
+    def _finish_before_execution(
+        self,
+        reason: str,
+        *,
+        build_started: bool,
+    ) -> None:
+        if not build_started:
+            self.progress.finish(
+                MODULE_BUILD,
+                status="skipped",
+                detail="未执行",
+                complete=True,
+            )
+        for module in (MODULE_RUN, MODULE_EVALUATE, MODULE_REPORT):
+            self.progress.finish(
+                module,
+                status="skipped",
+                detail="未执行",
+            )
+        self.progress.finish(
+            MODULE_TOTAL,
+            status="failed",
+            detail=reason,
+        )
+
+    def _finish_execution_progress(
+        self,
+        contract: AlgorithmContract,
+        checkpoint: RunCheckpoint,
+    ) -> None:
+        completed = _completed_segment_count(checkpoint)
+        not_run = _not_run_segment_count(checkpoint)
+        processed_all_datasets = checkpoint.next_dataset_index >= len(
+            checkpoint.dataset_order
+        )
+
+        if checkpoint.status == "interrupted":
+            module_status = "interrupted"
+        elif not processed_all_datasets:
+            module_status = "failed"
+        elif checkpoint.algorithm_failure_count or not_run:
+            module_status = "warning"
+        else:
+            module_status = "success"
+
+        self.progress.finish(
+            MODULE_RUN,
+            status=module_status,
+            detail=(
+                f"已处理 {completed}，算法失败 "
+                f"{checkpoint.algorithm_failure_count}，未运行 {not_run}"
+            ),
+        )
+        if contract.evaluation_workflow is not None:
+            self.progress.finish(
+                MODULE_EVALUATE,
+                status=module_status,
+                detail=f"随运行处理 {completed} 个 Segment",
+            )
+            self.progress.finish(
+                MODULE_REPORT,
+                status=module_status,
+                detail=f"已汇总 {completed} 个 Segment",
+            )
+
+        total_status = _progress_status(checkpoint.status)
+        if total_status == "success" and module_status == "warning":
+            total_status = "warning"
+        self.progress.finish(
+            MODULE_TOTAL,
+            status=total_status,
+            detail=(
+                f"完成 {completed}，失败 "
+                f"{checkpoint.algorithm_failure_count}，未运行 {not_run}"
+            ),
+        )
 
     def _copy_evaluation_support_files(
         self,
@@ -1137,6 +1434,32 @@ class ExecutionService:
             raise ExecutionError(
                 f"{contract.algorithm_id} does not use a numbered external output"
             )
+
+
+def _progress_status(status: str) -> str:
+    if status == "success":
+        return "success"
+    if status == "interrupted":
+        return "interrupted"
+    return "failed"
+
+
+def _completed_segment_count(checkpoint: RunCheckpoint) -> int:
+    return sum(
+        len(item.successful_segment_ids) + len(item.failed_segment_ids)
+        for item in checkpoint.dataset_results
+    )
+
+
+def _not_run_segment_count(checkpoint: RunCheckpoint) -> int:
+    return sum(len(item.not_run_segment_ids) for item in checkpoint.dataset_results)
+
+
+def _segment_progress_detail(
+    instance: DatasetInstance,
+    segment: Segment,
+) -> str:
+    return f"{instance.dataset_id} / Segment {segment.sequence_no}"
 
 
 def _deduplicate_issues(issues: Sequence[RunIssue]) -> List[RunIssue]:

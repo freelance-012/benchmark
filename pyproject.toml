@@ -11,6 +11,7 @@ requires-python = ">=3.8"
 dependencies = [
     "openpyxl>=3.1,<4",
     "PyYAML>=6.0,<7",
+    "rich>=13.7,<15",
 ]
 
 [project.optional-dependencies]

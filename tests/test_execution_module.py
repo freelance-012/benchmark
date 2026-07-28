@@ -33,6 +33,14 @@ from slam_benchmark.execution.runner import (
     resolve_numbered_output_sources,
 )
 from slam_benchmark.execution.service import ExecutionError, ExecutionService
+from slam_benchmark.progress import (
+    MODULE_BUILD,
+    MODULE_DATASET,
+    MODULE_EVALUATE,
+    MODULE_REPORT,
+    MODULE_RUN,
+    MODULE_TOTAL,
+)
 from tests.test_dataset_manager import _write_dataset, _write_kitti_sequence
 
 FIXTURE_ROOT = Path(__file__).parent / "fixtures" / "mock_algorithms"
@@ -348,6 +356,7 @@ class ExecutionModuleTests(unittest.TestCase):
             "algorithm2",
             _fail_first_segment_for_bad_dataset,
         )
+        progress = _RecordingProgress()
         collection = self.root / "default-mode datasets"
         bad = self._create_sf_dataset(
             collection,
@@ -361,7 +370,7 @@ class ExecutionModuleTests(unittest.TestCase):
             "rk3399",
         )
 
-        summary = ExecutionService().start(
+        summary = ExecutionService(progress=progress).start(
             self._request("algorithm2", algorithm_root, collection, "rk3399")
         )
 
@@ -388,6 +397,16 @@ class ExecutionModuleTests(unittest.TestCase):
             4,
         )
         self.assertFalse(any(summary.result_root.rglob("dataset_receipt.yaml")))
+        self.assertEqual(progress.completed(MODULE_DATASET), (2, 2))
+        self.assertEqual(progress.completed(MODULE_BUILD), (1, 1))
+        for module in (
+            MODULE_TOTAL,
+            MODULE_RUN,
+            MODULE_EVALUATE,
+            MODULE_REPORT,
+        ):
+            self.assertEqual(progress.completed(module), (4, 4))
+        self.assertEqual(progress.status(MODULE_TOTAL), "warning")
 
     def test_multiple_successful_segments_have_isolated_results(self) -> None:
         algorithm_root = self._copy_git_algorithm("algorithm2")
@@ -1343,6 +1362,75 @@ print("integration voeval complete")
     def _dataset_results(self, result_root: Path):
         checkpoint = self._yaml(result_root / "checkpoint.yaml")
         return checkpoint["dataset_results"]
+
+
+class _RecordingProgress:
+    def __init__(self) -> None:
+        self.tasks = {}
+
+    def prepare(
+        self,
+        module: str,
+        *,
+        total: int,
+        completed: int = 0,
+        detail: str = "",
+    ) -> None:
+        self.tasks[module] = {
+            "total": total,
+            "completed": completed,
+            "detail": detail,
+            "status": "waiting",
+        }
+
+    def begin(
+        self,
+        module: str,
+        *,
+        total: Optional[int] = None,
+        completed: int = 0,
+        detail: str = "",
+    ) -> None:
+        self.tasks[module] = {
+            "total": total,
+            "completed": completed,
+            "detail": detail,
+            "status": "running",
+        }
+
+    def describe(self, module: str, detail: str) -> None:
+        self.tasks[module]["detail"] = detail
+
+    def advance(self, module: str, *, amount: int = 1, detail: str = "") -> None:
+        self.tasks[module]["completed"] += amount
+        self.tasks[module]["detail"] = detail
+
+    def finish(
+        self,
+        module: str,
+        *,
+        status: str,
+        detail: str = "",
+        complete: bool = False,
+    ) -> None:
+        task = self.tasks[module]
+        if complete:
+            if task["total"] is None or task["total"] <= 0:
+                task["total"] = 1
+            task["completed"] = task["total"]
+        task["status"] = status
+        if detail:
+            task["detail"] = detail
+
+    def completed(self, module: str) -> Tuple[int, int]:
+        task = self.tasks[module]
+        return int(task["completed"]), int(task["total"])
+
+    def status(self, module: str) -> str:
+        return str(self.tasks[module]["status"])
+
+    def close(self) -> None:
+        return None
 
 
 def _fail_for_bad_dataset(source: str) -> str:

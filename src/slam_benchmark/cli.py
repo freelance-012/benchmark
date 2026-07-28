@@ -20,6 +20,14 @@ from .execution.models import (
     RunRequest,
 )
 from .execution.service import ExecutionError, ExecutionService
+from .progress import (
+    MODULE_BUILD,
+    MODULE_DATASET,
+    MODULE_TOTAL,
+    PIPELINE_MODULES,
+    ProgressReporter,
+    TerminalProgress,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -116,43 +124,99 @@ def main(argv: Optional[List[str]] = None) -> int:
     debug = "--debug" in raw_arguments
     parsed_arguments = [item for item in raw_arguments if item != "--debug"]
     args = build_parser().parse_args(parsed_arguments)
-    with debug_mode(debug):
+    modules = {
+        "dataset": (MODULE_TOTAL, MODULE_DATASET),
+        "build": (MODULE_TOTAL, MODULE_BUILD),
+        "run": PIPELINE_MODULES,
+    }[args.module]
+    with debug_mode(debug), TerminalProgress(
+        modules,
+        enabled=False if debug else None,
+    ) as progress:
         try:
             if args.module == "dataset":
-                return _run_dataset_command(args)
+                return _run_dataset_command(args, progress)
             if args.module == "build":
-                return _run_build_command(args)
+                return _run_build_command(args, progress)
             if args.module == "run":
-                return _run_execution_command(args)
+                return _run_execution_command(args, progress)
         except (DatasetError, BuildError, ExecutionError) as exc:
+            progress.close()
             print(f"error: {exc}", file=sys.stderr)
             return 2
     return 2
 
 
-def _run_dataset_command(args: argparse.Namespace) -> int:
+def _run_dataset_command(
+    args: argparse.Namespace,
+    progress: ProgressReporter,
+) -> int:
     manager = DatasetManager(load_dataset_config(args.config))
+    progress.begin(MODULE_TOTAL, total=1, detail="数据集管理")
+    progress.begin(MODULE_DATASET, detail="扫描并校验数据集")
     if args.dataset_command == "scan":
         report = manager.scan(refresh=args.refresh, persist=not args.dry_run)
-        _print_report(report)
-        return 1 if report.has_errors or not report.datasets else 0
-    if args.dataset_command == "list":
+    elif args.dataset_command == "list":
+        progress.describe(MODULE_DATASET, "读取已登记数据集")
         report = manager.catalog()
-        _print_report(report)
-        return 1 if report.has_errors or not report.datasets else 0
-    return 2
+    else:
+        return 2
+
+    failed = report.has_errors or not report.datasets
+    status = "failed" if failed else "success"
+    item_count = len(report.datasets) + sum(
+        item.level == "error" for item in report.diagnostics
+    )
+    display_count = max(1, item_count)
+    progress.prepare(
+        MODULE_DATASET,
+        total=display_count,
+        completed=display_count,
+    )
+    progress.finish(
+        MODULE_DATASET,
+        status=status,
+        detail=(
+            f"{len(report.datasets)} 个数据集，"
+            f"{sum(item.level == 'error' for item in report.diagnostics)} 个异常"
+        ),
+        complete=True,
+    )
+    progress.advance(MODULE_TOTAL, detail="数据集管理完成")
+    progress.finish(MODULE_TOTAL, status=status, complete=True)
+    progress.close()
+    _print_report(report)
+    return 1 if failed else 0
 
 
 def _add_config_argument(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--config", required=True, type=Path, help="configuration YAML")
 
 
-def _run_build_command(args: argparse.Namespace) -> int:
+def _run_build_command(
+    args: argparse.Namespace,
+    progress: ProgressReporter,
+) -> int:
     service = BuildService(load_build_config(args.config))
+    progress.begin(MODULE_TOTAL, total=1, detail="算法构建")
+    progress.begin(MODULE_BUILD, detail="执行编译脚本")
     if args.result_dir is None:
         receipt = service.build_auto()
     else:
         receipt = service.build(args.result_dir)
+    progress.finish(
+        MODULE_BUILD,
+        status=_progress_status(receipt.status),
+        detail=f"耗时 {receipt.duration_seconds:.1f}s",
+        complete=True,
+    )
+    progress.advance(MODULE_TOTAL, detail="构建完成")
+    progress.finish(
+        MODULE_TOTAL,
+        status=_progress_status(receipt.status),
+        complete=True,
+    )
+    progress.close()
     receipt_path = receipt.stdout_path.parent.parent / "build_receipt.yaml"
     message = (
         f"[{receipt.status.upper()}] {receipt.algorithm_id}  receipt: {receipt_path}"
@@ -166,7 +230,10 @@ def _run_build_command(args: argparse.Namespace) -> int:
     return 130 if receipt.status == "interrupted" else 1
 
 
-def _run_execution_command(args: argparse.Namespace) -> int:
+def _run_execution_command(
+    args: argparse.Namespace,
+    progress: ProgressReporter,
+) -> int:
     policy = FAILURE_POLICY_FAIL_FAST if args.fail_fast else FAILURE_POLICY_CONTINUE
     request = RunRequest(
         build_config=load_build_config(args.algorithm_config),
@@ -180,12 +247,13 @@ def _run_execution_command(args: argparse.Namespace) -> int:
         failure_threshold=args.failure_threshold,
         timeout_seconds=args.timeout_seconds,
     )
-    service = ExecutionService()
+    service = ExecutionService(progress=progress)
     if args.resume is None:
         summary = service.start(request)
     else:
         summary = service.resume(request, args.resume)
 
+    progress.close()
     message = (
         f"[{summary.status.upper()}] "
         f"datasets {summary.successful_datasets} success, "
@@ -203,6 +271,14 @@ def _run_execution_command(args: argparse.Namespace) -> int:
     if summary.failure_reason:
         print(f"reason: {summary.failure_reason}", file=sys.stderr)
     return 130 if summary.status == "interrupted" else 1
+
+
+def _progress_status(status: str) -> str:
+    if status == "success":
+        return "success"
+    if status == "interrupted":
+        return "interrupted"
+    return "failed"
 
 
 def _print_report(report: ScanReport) -> None:
