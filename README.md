@@ -1,6 +1,6 @@
 # SLAM Benchmark
 
-本仓库正在实现一个本地、单用户、CLI 启动的 SLAM 算法基线测试系统。当前代码已完成数据集管理、算法编译和算法运行模块，覆盖 RK3399、RK3588、KITTI Odometry 数据集，以及可记录 Git、构建回执、逐 Segment 运行结果和数据集级检查点的串行执行流程。
+本仓库正在实现一个本地、单用户、CLI 启动的 SLAM 算法基线测试系统。当前代码已完成数据集管理、算法编译、算法运行和逐 Segment 评估模块，覆盖 RK3399、RK3588、KITTI Odometry 数据集，以及可记录 Git、构建回执、逐 Segment 运行与评估结果、Excel 汇总和数据集级检查点的串行执行流程。
 
 ## 当前范围
 
@@ -24,9 +24,12 @@
 - 校验模拟算法固定输出并保存到当前数字 Segment 目录；
 - 保存 Segment 回执、日志、冻结配置和数据集级检查点；
 - 默认记录失败 Segment 并继续后续 Segment，也可使用 `--fail-fast` 在第一次失败时退出；
-- 在上下文未变化时，从未完成的数据集恢复运行。
+- 在上下文未变化时，从未完成的数据集恢复运行；
+- 对运行成功的 SF VO、SF VLOC Segment 立即调用用户环境中的 `voeval`；
+- 保存 `metrics.json`、评估回执和 `voeval.log`；
+- 每个 Segment 形成状态后重建本次测试的单表 `run_summary.xlsx`。
 
-暂未实现 EuRoC、voeval 自动评估、Excel 汇总、回归对比和最终报告。这些能力保留在总体设计中，后续按模块接入。
+暂未实现 EuRoC 运行、回归对比和最终报告。这些能力保留在总体设计中，后续按模块接入。
 
 ## 项目结构
 
@@ -38,6 +41,7 @@ benchmark/
 │   ├── algorithms/           # 框架维护的算法内置契约
 │   ├── compilation/          # 算法编译、Git 快照、回执与日志
 │   ├── datasets/             # 数据集契约、扫描、分段与存储
+│   ├── evaluation/           # voeval 调用、评估回执与 Excel 汇总
 │   └── execution/            # 命令组合、算法执行、输出校验与恢复
 ├── tests/                    # 单元测试和三个可编译模拟算法
 ├── tools/                    # 可重复生成和验证异常测试数据的工具
@@ -50,7 +54,9 @@ benchmark/
 ## 环境与依赖
 
 - Python 3.8 或更高版本；
-- PyYAML 6.x。
+- PyYAML 6.x；
+- openpyxl 3.1.x；
+- 用户环境中可直接执行的 `voeval` 命令。
 
 使用系统 Python 安装到当前用户目录，不创建或激活虚拟环境：
 
@@ -276,9 +282,9 @@ benchmark run \
 ```
 
 Debug 输出写到终端的标准错误流，不改变原有命令结果。终端只显示数据集、
-编译和运行三个主要模块，不展开 Git 查询、配置读取、文件复制和校验等内部
-步骤。每个模块只保留 Pipeline 最终组装的输入命令、实际标准输出与错误输出
-（如有）、执行状态，以及本次真正保存的结果文件。
+编译、运行、评估和汇总主要模块，不展开 Git 查询、配置读取、文件复制和校验
+等内部步骤。每个模块只保留 Pipeline 最终组装的输入命令或输入文件、实际
+标准输出与错误输出（如有）、执行状态，以及本次真正保存的结果文件。
 
 独立执行一次算法编译：
 
@@ -361,6 +367,7 @@ result/
         │   └── build.stderr.log
         ├── build_receipt.yaml
         ├── checkpoint.yaml
+        ├── run_summary.xlsx
         └── dataset/
             ├── 0/
             │   ├── receipt.yaml
@@ -377,9 +384,18 @@ result/
             └── ...
 ```
 
-当前运行模块会预先创建 `evaluation/`，但不会伪造评估文件；等 voeval
-评估模块接入后，才会在其中写入真实的 `metrics.json`、`receipt.yaml`
-和 `voeval.log`。
+运行成功并完成输出复制后，系统立即以当前数字 Segment 目录作为
+`log_dir` 调用 PATH 中的 `voeval`，并在 `evaluation/` 中保存真实的
+`metrics.json`、`receipt.yaml` 和 `voeval.log`。评估失败不会增加算法
+失败次数，失败原因会写入评估回执和 `run_summary.xlsx`，随后继续处理
+下一个 Segment。
+
+`run_summary.xlsx` 只有一个 `Summary` 工作表，第一列为运行编号，第二列
+为可点击的数字 Segment 结果路径。SF VO 汇总 100m RPE 平移误差的 RMSE、
+Mean、Median、Max、Min 和 Count；SF VLOC 汇总轨迹长度以及水平位置、
+垂直位置和欧拉角的平均与最大误差。VLOC 的 `mean_error_pos_xy` 大于 20m
+时标黄，大于 50m 时标红。算法运行失败、评估失败和未运行 Segment 也保留
+一行，并显示运行状态、评估状态和失败原因。
 
 运行成功后，系统按数据集契约把 voeval 使用的单份外参复制到
 当前数字 Segment 目录：RK3399 使用 `calib_raw.yaml`，RK3588 使用

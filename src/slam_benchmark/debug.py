@@ -21,6 +21,8 @@ _VISIBLE_MODULES = {
     "DATASET_LIST": "DATASET",
     "BUILD": "BUILD",
     "RUN": "RUN",
+    "EVALUATE": "EVALUATE",
+    "REPORT": "REPORT",
 }
 
 
@@ -94,6 +96,16 @@ def debug_output(module: str, **values: object) -> None:
     display = _display_module(module)
     if display is not None:
         _emit_block(display, "OUTPUT", values)
+
+
+def debug_input(module: str, **values: object) -> None:
+    """Print resolved non-command inputs for an internal module."""
+
+    if not debug_enabled():
+        return
+    display = _display_module(module)
+    if display is not None:
+        _emit_block(display, "INPUT", values)
 
 
 def process_output_targets(

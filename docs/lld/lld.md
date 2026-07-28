@@ -565,21 +565,15 @@ Pipeline 不向 voeval 指标 JSON 中添加运行上下文字段，而是另外
 
 #### 2.2 run Excel 数据汇总
 
-Pipeline 为每个 run 维护一份 `run_summary.xlsx`。每个 Segment 形成最终状态后立即更新对应数据；暂停或重启时保留已经写入的内容，恢复后从检查点记录的未完成数据集重新开始。
+Pipeline 为每个 run 维护一份单工作表的 `run_summary.xlsx`。每个 Segment 形成最终状态后立即重建汇总；暂停或重启时保留已经写入的内容，恢复时先按现有事实重建，再从检查点记录的未完成数据集重新开始。
 
-Excel 只保存适合汇总和筛选的数据：
+`Summary` 工作表第一列为从 0 开始的运行编号，第二列为可点击的 Segment 结果目录，指标列之后保存运行状态、评估状态和失败原因。算法失败、评估失败和未运行 Segment 都保留一行，失效指标留空。
 
-| 工作表 | 保存内容 |
-| --- | --- |
-| run 概要 | 算法、Git commit、dirty 状态、构建状态、失败阈值和 run 状态 |
-| Segment 结果 | 数据集、Segment 起止时间戳、算法运行状态、评估状态、耗时和失败原因 |
-| 指标结果 | 数据集、Segment、系统选定的报告关注指标、数值、单位、有效状态和失效原因 |
-| 对比结果 | 参考 run、当前值、参考值、绝对变化、百分比变化和可比状态 |
-| 结果索引 | run、数据集、Segment、采用的 evaluation-id，以及算法原始输出、全量指标 JSON、运行日志和评估回执的路径 |
+- SF VO 只汇总 `RPE 平移误差 (delta=100.0m)` 的 RMSE、Mean、Median、Max、Min 和 Count；
+- SF VLOC 汇总 `trajectory_length_m`、`mean_error_pos_xy`、`mean_error_pos_z`、`mean_error_euler`、`max_error_pos_xy`、`max_error_pos_z` 和 `max_error_euler`；
+- SF VLOC 的 `mean_error_pos_xy` 大于 20m 且不超过 50m 时标黄，大于 50m 时标红；等于 20m 时不着色，等于 50m 时标黄。
 
-voeval 的全量指标保存在每个 Segment 的 `metrics.json` 中，Excel 只提取系统选定的报告关注指标。算法轨迹、逐帧数据、完整日志和其他大文件内容不写入 Excel；结果索引只保存定位这些文件所需的路径。Excel 是整次 run 的累计数据汇总和最终报告的数据来源，不属于单 Segment 报告。
-
-运行回执、评估回执和 `metrics.json` 是不可变的事实记录，Excel 是由这些记录生成的派生汇总，不是唯一事实源。Segment 状态按照 `test_id`、`dataset_id` 和 `segment_id` 幂等更新；存在评估结果时，再使用 `evaluation_id` 区分和选择评估记录，不能盲目追加重复行。当前数据集的 Excel 内容成功持久化后才能推进数据集检查点；Excel 损坏或缺失时可以从事实记录重建，run 完成后冻结本次默认汇总。
+voeval 的结构化指标保存在每个 Segment 的 `metrics.json` 中，Excel 只提取上述报告关注指标。算法轨迹、逐帧数据和完整日志不写入 Excel。运行回执、评估回执和 `metrics.json` 是事实记录，Excel 是可从这些记录重建的派生汇总，不是唯一事实源；重建时按运行编号覆盖整张表，不盲目追加重复行。
 
 #### 2.3 run 汇总报告
 

@@ -17,6 +17,12 @@ from ..datasets.models import DatasetInstance, ScanDiagnostic, Segment
 from ..datasets.paths import resolve_dataset_file
 from ..datasets.service import DatasetManager
 from ..debug import debug_enabled, debug_output
+from ..evaluation import (
+    EvaluationError,
+    EvaluationRequest,
+    EvaluationService,
+    SummaryWorkbookWriter,
+)
 from .command import CommandError, build_run_command
 from .models import (
     FAILURE_POLICIES,
@@ -61,9 +67,13 @@ class ExecutionService:
         self,
         store: Optional[RunStore] = None,
         build_store: Optional[BuildReceiptStore] = None,
+        evaluation_service: Optional[EvaluationService] = None,
+        summary_writer: Optional[SummaryWorkbookWriter] = None,
     ):
         self.store = store or RunStore()
         self.build_store = build_store or BuildReceiptStore()
+        self.evaluation_service = evaluation_service or EvaluationService()
+        self.summary_writer = summary_writer or SummaryWorkbookWriter()
 
     def start(self, request: RunRequest) -> RunSummary:
         self._validate_request(request)
@@ -249,6 +259,7 @@ class ExecutionService:
             )
         except RunStorageError as exc:
             raise ExecutionError(str(exc)) from exc
+        self._update_summary(test_root, contract)
 
         checkpoint = replace(
             checkpoint,
@@ -600,6 +611,24 @@ class ExecutionService:
             )
             self.store.save_segment_receipt(paths, receipt)
             _debug_run_output(paths, receipt)
+            evaluation_status, evaluation_failure = (
+                self._evaluate_and_update_summary(
+                    contract,
+                    instance,
+                    segment,
+                    paths,
+                    receipt,
+                    test_root,
+                )
+            )
+            if evaluation_status == "interrupted":
+                successful.append(segment.segment_id)
+                not_run.extend(
+                    item.segment_id for item in valid_segments[segment_index + 1 :]
+                )
+                failure_reason = evaluation_failure
+                dataset_status = "interrupted"
+                break
             build_service.verify_runtime_context(build_receipt)
 
             if segment_status == "success":
@@ -635,6 +664,56 @@ class ExecutionService:
             algorithm_failure_count=algorithm_failure_count,
             failure_reason=failure_reason,
         )
+
+    def _evaluate_and_update_summary(
+        self,
+        contract: AlgorithmContract,
+        instance: DatasetInstance,
+        segment: Segment,
+        paths: SegmentPaths,
+        run_receipt: SegmentRunReceipt,
+        test_root: Path,
+    ) -> Tuple[Optional[str], Optional[str]]:
+        workflow = contract.evaluation_workflow
+        if workflow is None:
+            return None, None
+        evaluation_status = "not_run"
+        evaluation_failure: Optional[str] = None
+        if run_receipt.status == "success":
+            try:
+                evaluation_receipt = self.evaluation_service.evaluate(
+                    EvaluationRequest(
+                        test_id=test_root.name,
+                        algorithm_id=contract.algorithm_id,
+                        run_index=run_receipt.run_index,
+                        dataset_id=instance.dataset_id,
+                        dataset_type=instance.dataset_type,
+                        segment_id=segment.segment_id,
+                        workflow=workflow,
+                        data_dir=instance.root_path,
+                        log_dir=paths.segment_dir,
+                        evaluation_dir=paths.evaluation_dir,
+                    )
+                )
+            except EvaluationError as exc:
+                raise RunStorageError(str(exc)) from exc
+            evaluation_status = evaluation_receipt.status
+            evaluation_failure = evaluation_receipt.failure_reason
+        self._update_summary(test_root, contract)
+        return evaluation_status, evaluation_failure
+
+    def _update_summary(
+        self,
+        test_root: Path,
+        contract: AlgorithmContract,
+    ) -> None:
+        workflow = contract.evaluation_workflow
+        if workflow is None:
+            return
+        try:
+            self.summary_writer.update(test_root, workflow)
+        except EvaluationError as exc:
+            raise RunStorageError(str(exc)) from exc
 
     def _copy_evaluation_support_files(
         self,

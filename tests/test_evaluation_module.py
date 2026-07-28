@@ -1,0 +1,292 @@
+from __future__ import annotations
+
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+from typing import Optional
+
+import yaml
+from openpyxl import load_workbook
+
+from slam_benchmark.evaluation import (
+    EvaluationRequest,
+    EvaluationService,
+    SummaryWorkbookWriter,
+)
+
+
+class EvaluationModuleTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name).resolve()
+        self.test_root = self.root / "result" / "algorithm" / "test-000"
+        (self.test_root / "config").mkdir(parents=True)
+        self.fake_voeval = self._write_fake_voeval()
+        self.service = EvaluationService(
+            (sys.executable, str(self.fake_voeval)),
+            timeout_seconds=10,
+        )
+        self.writer = SummaryWorkbookWriter()
+
+    def test_sf_vo_writes_evaluation_facts_and_two_level_summary(self) -> None:
+        self._freeze_segment_order(1)
+        segment_dir = self._write_run_receipt(0, "success")
+        receipt = self.service.evaluate(
+            self._request(0, "sf_vo", segment_dir)
+        )
+
+        workbook_path = self.writer.update(self.test_root, "sf_vo")
+
+        evaluation_dir = segment_dir / "evaluation"
+        self.assertEqual(receipt.status, "success")
+        self.assertTrue((evaluation_dir / "metrics.json").is_file())
+        self.assertTrue((evaluation_dir / "receipt.yaml").is_file())
+        self.assertIn(
+            "fake voeval sf_vo",
+            (evaluation_dir / "voeval.log").read_text(encoding="utf-8"),
+        )
+
+        workbook = load_workbook(workbook_path)
+        self.addCleanup(workbook.close)
+        sheet = workbook["Summary"]
+        self.assertEqual(sheet["A1"].value, "运行编号")
+        self.assertEqual(sheet["C1"].value, "RPE 平移误差 (delta=100.0m)")
+        self.assertEqual(
+            [sheet.cell(row=2, column=column).value for column in range(3, 9)],
+            ["RMSE", "Mean", "Median", "Max", "Min", "Count"],
+        )
+        self.assertEqual(sheet["A3"].value, 0)
+        self.assertEqual(sheet["B3"].value, str(segment_dir))
+        self.assertTrue(sheet["B3"].hyperlink.target.startswith("file:///"))
+        self.assertEqual(
+            [sheet.cell(row=3, column=column).value for column in range(3, 9)],
+            [1, 2, 3, 4, 0.5, 6],
+        )
+        self.assertEqual(sheet["I3"].value, "success")
+        self.assertEqual(sheet["J3"].value, "success")
+        self.assertIsNone(sheet["K3"].value)
+
+    def test_sf_vloc_colors_horizontal_error_and_keeps_failed_run(self) -> None:
+        self._freeze_segment_order(6)
+        for run_index in range(5):
+            segment_dir = self._write_run_receipt(run_index, "success")
+            receipt = self.service.evaluate(
+                self._request(run_index, "sf_vloc", segment_dir)
+            )
+            self.assertEqual(receipt.status, "success")
+        failed_dir = self._write_run_receipt(
+            5,
+            "failed",
+            failure_reason="algorithm failed",
+        )
+
+        workbook_path = self.writer.update(self.test_root, "sf_vloc")
+
+        workbook = load_workbook(workbook_path)
+        self.addCleanup(workbook.close)
+        sheet = workbook["Summary"]
+        self.assertEqual(
+            [sheet.cell(row=1, column=column).value for column in range(1, 10)],
+            [
+                "运行编号",
+                "路径",
+                "trajectory_length_m",
+                "mean_error_pos_xy",
+                "mean_error_pos_z",
+                "mean_error_euler",
+                "max_error_pos_xy",
+                "max_error_pos_z",
+                "max_error_euler",
+            ],
+        )
+        self.assertEqual(sheet["D2"].value, 10)
+        self.assertEqual(sheet["D3"].value, 20)
+        self.assertEqual(sheet["D4"].value, 25)
+        self.assertEqual(sheet["D5"].value, 50)
+        self.assertEqual(sheet["D6"].value, 55)
+        self.assertNotEqual(sheet["D2"].fill.fill_type, "solid")
+        self.assertNotEqual(sheet["D3"].fill.fill_type, "solid")
+        self.assertTrue(sheet["D4"].fill.fgColor.rgb.endswith("FFF2CC"))
+        self.assertTrue(sheet["D5"].fill.fgColor.rgb.endswith("FFF2CC"))
+        self.assertTrue(sheet["D6"].fill.fgColor.rgb.endswith("FFC7CE"))
+        self.assertEqual(sheet["J7"].value, "failed")
+        self.assertEqual(sheet["K7"].value, "not_run")
+        self.assertEqual(sheet["L7"].value, "algorithm failed")
+        self.assertEqual(sheet["B7"].value, str(failed_dir))
+
+    def test_voeval_failure_is_recorded_without_metrics(self) -> None:
+        self._freeze_segment_order(1)
+        segment_dir = self._write_run_receipt(0, "success")
+        data_dir = self.root / "force-evaluation-failure"
+        data_dir.mkdir()
+
+        receipt = self.service.evaluate(
+            self._request(0, "sf_vo", segment_dir, data_dir=data_dir)
+        )
+        workbook_path = self.writer.update(self.test_root, "sf_vo")
+
+        evaluation_dir = segment_dir / "evaluation"
+        self.assertEqual(receipt.status, "failed")
+        self.assertEqual(receipt.exit_code, 7)
+        self.assertFalse((evaluation_dir / "metrics.json").exists())
+        self.assertIn(
+            "intentional evaluator failure",
+            (evaluation_dir / "voeval.log").read_text(encoding="utf-8"),
+        )
+        saved_receipt = self._yaml(evaluation_dir / "receipt.yaml")
+        self.assertEqual(saved_receipt["status"], "failed")
+        self.assertIn("code 7", saved_receipt["failure_reason"])
+
+        workbook = load_workbook(workbook_path)
+        self.addCleanup(workbook.close)
+        sheet = workbook["Summary"]
+        self.assertEqual(sheet["I3"].value, "success")
+        self.assertEqual(sheet["J3"].value, "failed")
+        self.assertIn("code 7", sheet["K3"].value)
+        self.assertIsNone(sheet["C3"].value)
+
+    def test_summary_lists_planned_but_not_run_segment(self) -> None:
+        self._freeze_segment_order(2)
+        self._write_run_receipt(0, "failed", failure_reason="first run failed")
+
+        workbook_path = self.writer.update(self.test_root, "sf_vo")
+
+        workbook = load_workbook(workbook_path)
+        self.addCleanup(workbook.close)
+        sheet = workbook["Summary"]
+        self.assertEqual(sheet["A3"].value, 0)
+        self.assertEqual(sheet["I3"].value, "failed")
+        self.assertEqual(sheet["J3"].value, "not_run")
+        self.assertEqual(sheet["A4"].value, 1)
+        self.assertEqual(sheet["I4"].value, "not_run")
+        self.assertEqual(sheet["J4"].value, "not_run")
+
+    def _freeze_segment_order(self, count: int) -> None:
+        (self.test_root / "config" / "run.yaml").write_text(
+            yaml.safe_dump(
+                {
+                    "segment_order": [
+                        {
+                            "run_index": run_index,
+                            "dataset_id": f"dataset-{run_index}",
+                            "segment_id": f"segment-{run_index}",
+                        }
+                        for run_index in range(count)
+                    ]
+                },
+                sort_keys=False,
+            ),
+            encoding="utf-8",
+        )
+
+    def _write_run_receipt(
+        self,
+        run_index: int,
+        status: str,
+        *,
+        failure_reason: str = "",
+    ) -> Path:
+        segment_dir = self.test_root / "dataset" / str(run_index)
+        (segment_dir / "evaluation").mkdir(parents=True)
+        (segment_dir / "receipt.yaml").write_text(
+            yaml.safe_dump(
+                {
+                    "run_index": run_index,
+                    "status": status,
+                    "failure_reason": failure_reason or None,
+                },
+                sort_keys=False,
+            ),
+            encoding="utf-8",
+        )
+        return segment_dir.resolve()
+
+    def _request(
+        self,
+        run_index: int,
+        workflow: str,
+        segment_dir: Path,
+        *,
+        data_dir: Optional[Path] = None,
+    ) -> EvaluationRequest:
+        selected_data_dir = data_dir or (self.root / f"data-{run_index}")
+        selected_data_dir.mkdir(exist_ok=True)
+        return EvaluationRequest(
+            test_id="test-000",
+            algorithm_id="algorithm",
+            run_index=run_index,
+            dataset_id=f"dataset-{run_index}",
+            dataset_type="rk3399",
+            segment_id=f"segment-{run_index}",
+            workflow=workflow,
+            data_dir=selected_data_dir,
+            log_dir=segment_dir,
+            evaluation_dir=segment_dir / "evaluation",
+        )
+
+    def _write_fake_voeval(self) -> Path:
+        path = self.root / "fake_voeval.py"
+        path.write_text(
+            """\
+from __future__ import annotations
+
+import json
+import sys
+from pathlib import Path
+
+mode = sys.argv[1]
+data_dir = Path(sys.argv[2])
+log_dir = Path(sys.argv[3])
+output = Path(sys.argv[sys.argv.index("--output") + 1])
+
+if "force-evaluation-failure" in data_dir.name:
+    print("intentional evaluator failure")
+    raise SystemExit(7)
+
+run_index = int(log_dir.name)
+if mode == "sf_vo":
+    payload = {
+        "mode": mode,
+        "rpe_translation_m": {
+            "delta_value": 100.0,
+            "delta_unit": "m",
+            "rmse": 1.0,
+            "mean": 2.0,
+            "median": 3.0,
+            "max": 4.0,
+            "min": 0.5,
+            "count": 6,
+        },
+    }
+else:
+    horizontal = (10.0, 20.0, 25.0, 50.0, 55.0)[run_index]
+    payload = {
+        "mode": mode,
+        "vloc_metrics": {
+            "trajectory_length_m": 1000.0 + run_index,
+            "mean_error_pos_xy": horizontal,
+            "mean_error_pos_z": 2.0,
+            "mean_error_euler": 3.0,
+            "max_error_pos_xy": horizontal + 5.0,
+            "max_error_pos_z": 4.0,
+            "max_error_euler": 5.0,
+        },
+    }
+
+output.parent.mkdir(parents=True, exist_ok=True)
+output.write_text(json.dumps(payload), encoding="utf-8")
+print(f"fake voeval {mode}")
+""",
+            encoding="utf-8",
+        )
+        return path
+
+    @staticmethod
+    def _yaml(path: Path):
+        return yaml.safe_load(path.read_text(encoding="utf-8"))
+
+
+if __name__ == "__main__":
+    unittest.main()

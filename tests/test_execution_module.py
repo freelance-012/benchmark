@@ -16,10 +16,13 @@ from pathlib import Path
 from typing import Callable, Optional, Tuple
 
 import yaml
+import openpyxl
+from openpyxl import load_workbook
 
 from slam_benchmark.cli import main
 from slam_benchmark.compilation.models import BuildConfig
 from slam_benchmark.datasets.models import DatasetScanConfig
+from slam_benchmark.evaluation import EvaluationService
 from slam_benchmark.execution.models import (
     FAILURE_POLICY_FAIL_FAST,
     RunRequest,
@@ -433,6 +436,7 @@ class ExecutionModuleTests(unittest.TestCase):
                 "logs",
                 "build_receipt.yaml",
                 "checkpoint.yaml",
+                "run_summary.xlsx",
                 "dataset",
             },
         )
@@ -541,6 +545,67 @@ class ExecutionModuleTests(unittest.TestCase):
             ),
             "121.2 31.1 51.0\n",
         )
+
+    def test_successful_segment_runs_voeval_and_updates_summary(self) -> None:
+        algorithm_root = self._copy_git_algorithm("algorithm1")
+        collection, _ = self._create_collection(
+            "rk3399",
+            "successful-evaluation",
+        )
+        fake_voeval = self.root / "fake_voeval.py"
+        fake_voeval.write_text(
+            """\
+import json
+import sys
+from pathlib import Path
+
+output = Path(sys.argv[sys.argv.index("--output") + 1])
+output.write_text(json.dumps({
+    "mode": sys.argv[1],
+    "rpe_translation_m": {
+        "delta_value": 100.0,
+        "delta_unit": "m",
+        "rmse": 1.1,
+        "mean": 1.2,
+        "median": 1.3,
+        "max": 1.4,
+        "min": 1.0,
+        "count": 20,
+    },
+}), encoding="utf-8")
+print("integration voeval complete")
+""",
+            encoding="utf-8",
+        )
+        service = ExecutionService(
+            evaluation_service=EvaluationService(
+                (sys.executable, str(fake_voeval)),
+                timeout_seconds=10,
+            )
+        )
+
+        summary = service.start(
+            self._request("algorithm1", algorithm_root, collection, "rk3399")
+        )
+
+        self.assertEqual(summary.status, "success")
+        evaluation_dir = summary.result_root / "dataset" / "0" / "evaluation"
+        self.assertTrue((evaluation_dir / "metrics.json").is_file())
+        self.assertEqual(
+            self._yaml(evaluation_dir / "receipt.yaml")["status"],
+            "success",
+        )
+        self.assertIn(
+            "integration voeval complete",
+            (evaluation_dir / "voeval.log").read_text(encoding="utf-8"),
+        )
+        workbook = load_workbook(summary.result_root / "run_summary.xlsx")
+        self.addCleanup(workbook.close)
+        sheet = workbook["Summary"]
+        self.assertEqual(sheet["C3"].value, 1.1)
+        self.assertEqual(sheet["H3"].value, 20)
+        self.assertEqual(sheet["I3"].value, "success")
+        self.assertEqual(sheet["J3"].value, "success")
 
     def test_sf_vloc_requires_algorithm_home_point_output(self) -> None:
         algorithm_root = self._copy_git_algorithm(
@@ -950,7 +1015,7 @@ class ExecutionModuleTests(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         self.assertIn("[SUCCESS]", output.getvalue())
         debug_output = errors.getvalue()
-        for module in ("DATASET", "BUILD", "RUN"):
+        for module in ("DATASET", "BUILD", "RUN", "EVALUATE", "REPORT"):
             self.assertEqual(debug_output.count(f"[DEBUG][{module}][INPUT]"), 1)
             self.assertEqual(debug_output.count(f"[DEBUG][{module}][OUTPUT]"), 1)
         for hidden_module in (
@@ -1097,7 +1162,12 @@ class ExecutionModuleTests(unittest.TestCase):
             encoding="utf-8",
         )
         environment = os.environ.copy()
-        environment["PYTHONPATH"] = str(REPOSITORY_ROOT / "src")
+        environment["PYTHONPATH"] = os.pathsep.join(
+            (
+                str(REPOSITORY_ROOT / "src"),
+                str(Path(openpyxl.__file__).resolve().parent.parent),
+            )
+        )
         environment["PYTHONDONTWRITEBYTECODE"] = "1"
         process = subprocess.Popen(
             [
