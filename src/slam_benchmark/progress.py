@@ -6,9 +6,10 @@ import math
 import sys
 import time
 from contextlib import AbstractContextManager
-from typing import IO, Dict, Iterable, Optional, Protocol, Type
+from typing import Any, Callable, IO, Dict, Iterable, Optional, Protocol, Type
 
-from rich.console import Console
+from rich.constrain import Constrain
+from rich.console import Console, RenderableType
 from rich.progress import (
     BarColumn,
     MofNCompleteColumn,
@@ -28,6 +29,7 @@ MODULE_BUILD = "build"
 MODULE_RUN = "run"
 MODULE_EVALUATE = "evaluate"
 MODULE_REPORT = "report"
+_PROGRESS_RIGHT_MARGIN = 2
 
 PIPELINE_MODULES = (
     MODULE_TOTAL,
@@ -75,7 +77,7 @@ class ProgressReporter(Protocol):
         module: str,
         *,
         total: Optional[int] = None,
-        completed: int = 0,
+        completed: Optional[int] = None,
         detail: str = "",
     ) -> None: ...
 
@@ -88,6 +90,8 @@ class ProgressReporter(Protocol):
         eta_seconds: float,
         detail: str = "",
     ) -> None: ...
+
+    def wait(self, module: str, detail: str = "") -> None: ...
 
     def advance(self, module: str, *, amount: int = 1, detail: str = "") -> None: ...
 
@@ -121,7 +125,7 @@ class NullProgressReporter:
         module: str,
         *,
         total: Optional[int] = None,
-        completed: int = 0,
+        completed: Optional[int] = None,
         detail: str = "",
     ) -> None:
         del module, total, completed, detail
@@ -137,6 +141,9 @@ class NullProgressReporter:
         detail: str = "",
     ) -> None:
         del module, eta_seconds, detail
+
+    def wait(self, module: str, detail: str = "") -> None:
+        del module, detail
 
     def advance(self, module: str, *, amount: int = 1, detail: str = "") -> None:
         del module, amount, detail
@@ -161,6 +168,7 @@ class _RemainingTimeColumn(ProgressColumn):
     def render(self, task: Task) -> Text:
         state = str(task.fields.get("state", "waiting"))
         if task.finished or state in {
+            "waiting",
             "success",
             "warning",
             "failed",
@@ -186,6 +194,26 @@ class _RemainingTimeColumn(ProgressColumn):
         minutes, seconds = divmod(remainder, 60)
         value = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
         return Text(f"预计剩余 {value}")
+
+
+class _ReservedWidthProgress(Progress):
+    """Keep live output away from the terminal's auto-wrap column."""
+
+    def __init__(
+        self,
+        *columns: Any,
+        console: Console,
+        **kwargs: Any,
+    ) -> None:
+        self._render_console = console
+        super().__init__(*columns, console=console, **kwargs)
+
+    def get_renderables(self) -> Iterable[RenderableType]:
+        table = self.make_tasks_table(self.tasks)
+        yield Constrain(
+            table,
+            max(1, self._render_console.width - _PROGRESS_RIGHT_MARGIN),
+        )
 
 
 class _StateColumn(ProgressColumn):
@@ -216,6 +244,7 @@ class TerminalProgress(AbstractContextManager["TerminalProgress"]):
         output: Optional[IO[str]] = None,
         force_terminal: Optional[bool] = None,
         auto_refresh: bool = True,
+        get_time: Optional[Callable[[], float]] = None,
     ):
         normalized = tuple(str(item).strip().lower() for item in modules)
         unknown = tuple(item for item in normalized if item not in _MODULE_LABELS)
@@ -238,7 +267,7 @@ class TerminalProgress(AbstractContextManager["TerminalProgress"]):
         self._started = set()
         self._finished = set()
         self._closed = False
-        self._progress = Progress(
+        self._progress = _ReservedWidthProgress(
             TextColumn(
                 "{task.description}",
                 table_column=Column(width=10, no_wrap=True),
@@ -248,19 +277,25 @@ class TerminalProgress(AbstractContextManager["TerminalProgress"]):
             TaskProgressColumn(),
             TimeElapsedColumn(),
             _RemainingTimeColumn(),
-            _StateColumn(table_column=Column(ratio=1, overflow="ellipsis")),
+            _StateColumn(
+                table_column=Column(
+                    max_width=52,
+                    overflow="ellipsis",
+                    no_wrap=True,
+                )
+            ),
             console=console,
             auto_refresh=auto_refresh,
             refresh_per_second=4,
             transient=False,
             disable=not self.enabled,
-            expand=True,
+            expand=False,
+            get_time=get_time,
         )
 
     def __enter__(self) -> "TerminalProgress":
         if not self.enabled:
             return self
-        self._progress.start()
         for module in self.modules:
             self._task_ids[module] = self._progress.add_task(
                 _MODULE_LABELS[module],
@@ -272,7 +307,7 @@ class TerminalProgress(AbstractContextManager["TerminalProgress"]):
                 eta_seconds=None,
                 eta_recorded_at=None,
             )
-        self._progress.refresh()
+        self._progress.start()
         return self
 
     def __exit__(
@@ -316,24 +351,24 @@ class TerminalProgress(AbstractContextManager["TerminalProgress"]):
         module: str,
         *,
         total: Optional[int] = None,
-        completed: int = 0,
+        completed: Optional[int] = None,
         detail: str = "",
     ) -> None:
         if not self.enabled:
             return
         task_id = self._task_id(module)
-        self._progress.update(
-            task_id,
-            total=None if total is None else max(0, total),
-            completed=max(0, completed),
-            state="running",
-            detail=detail,
-            eta_seconds=None,
-            eta_recorded_at=None,
-        )
-        if module not in self._started:
-            self._progress.start_task(task_id)
-            self._started.add(module)
+        values: Dict[str, object] = {
+            "state": "running",
+            "detail": detail,
+            "eta_seconds": None,
+            "eta_recorded_at": None,
+        }
+        if total is not None:
+            values["total"] = max(0, total)
+        if completed is not None:
+            values["completed"] = max(0, completed)
+        self._progress.update(task_id, **values)
+        self._resume_task(module, task_id)
         self._finished.discard(module)
 
     def describe(self, module: str, detail: str) -> None:
@@ -365,17 +400,37 @@ class TerminalProgress(AbstractContextManager["TerminalProgress"]):
             values["detail"] = detail
         self._progress.update(self._task_id(module), **values)
 
+    def wait(self, module: str, detail: str = "") -> None:
+        if not self.enabled:
+            return
+        task_id = self._task_id(module)
+        task = self._progress.tasks[task_id]
+        if (
+            module in self._started
+            and module not in self._finished
+            and task.stop_time is None
+        ):
+            self._progress.stop_task(task_id)
+        self._progress.update(
+            task_id,
+            state="waiting",
+            detail=detail or str(task.fields.get("detail", "")),
+            eta_seconds=None,
+            eta_recorded_at=None,
+        )
+
     def advance(self, module: str, *, amount: int = 1, detail: str = "") -> None:
         if not self.enabled:
             return
         task_id = self._task_id(module)
-        if module not in self._started:
-            self._progress.start_task(task_id)
-            self._started.add(module)
+        task = self._progress.tasks[task_id]
+        state = str(task.fields.get("state", "waiting"))
+        if state == "running":
+            self._resume_task(module, task_id)
         self._progress.update(
             task_id,
             advance=max(0, amount),
-            state="running",
+            state=state,
             detail=detail,
         )
 
@@ -410,7 +465,8 @@ class TerminalProgress(AbstractContextManager["TerminalProgress"]):
         if module not in self._started:
             self._progress.start_task(task_id)
             self._started.add(module)
-        self._progress.stop_task(task_id)
+        if task.stop_time is None:
+            self._progress.stop_task(task_id)
         self._finished.add(module)
 
     def refresh(self) -> None:
@@ -434,3 +490,17 @@ class TerminalProgress(AbstractContextManager["TerminalProgress"]):
             return self._task_ids[normalized]
         except KeyError as exc:
             raise ValueError(f"progress module is not displayed: {normalized}") from exc
+
+    def _resume_task(self, module: str, task_id: int) -> None:
+        task = self._progress.tasks[task_id]
+        if module not in self._started:
+            self._progress.start_task(task_id)
+            self._started.add(module)
+            return
+        if task.stop_time is None:
+            return
+        start_time = task.start_time if task.start_time is not None else task.stop_time
+        elapsed = max(0.0, task.stop_time - start_time)
+        current = self._progress.get_time()
+        task.start_time = current - elapsed
+        task.stop_time = None

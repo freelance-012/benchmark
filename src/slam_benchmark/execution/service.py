@@ -335,7 +335,10 @@ class ExecutionService:
             )
         except RunStorageError as exc:
             raise ExecutionError(str(exc)) from exc
-        self._update_summary(test_root, contract)
+        if contract.evaluation_workflow is not None:
+            self.progress.begin(MODULE_REPORT, detail="恢复前重建汇总")
+            self._update_summary(test_root, contract)
+            self.progress.wait(MODULE_REPORT, detail="等待评估结果")
         ordered_segments = _ordered_valid_segments(prepared.instances)
         total_segments = len(ordered_segments)
         eta_estimator = RunEtaEstimator(
@@ -859,7 +862,7 @@ class ExecutionService:
         evaluation_status = "not_run"
         evaluation_failure: Optional[str] = None
         if run_receipt.status == "success":
-            self.progress.describe(MODULE_EVALUATE, progress_detail)
+            self.progress.begin(MODULE_EVALUATE, detail=progress_detail)
             try:
                 evaluation_receipt = self.evaluation_service.evaluate(
                     EvaluationRequest(
@@ -890,11 +893,19 @@ class ExecutionService:
             MODULE_EVALUATE,
             detail=evaluation_detail,
         )
-        self.progress.describe(MODULE_REPORT, progress_detail)
+        self.progress.wait(
+            MODULE_EVALUATE,
+            detail=f"等待下一段运行结果；{evaluation_detail}",
+        )
+        self.progress.begin(MODULE_REPORT, detail=progress_detail)
         self._update_summary(test_root, contract)
         self.progress.advance(
             MODULE_REPORT,
             detail=f"{progress_detail}：已更新",
+        )
+        self.progress.wait(
+            MODULE_REPORT,
+            detail=f"等待下一次汇总；{progress_detail}：已更新",
         )
         self.progress.advance(
             MODULE_TOTAL,
@@ -1004,13 +1015,13 @@ class ExecutionService:
                     complete=True,
                 )
             return
-        self.progress.begin(
+        self.progress.prepare(
             MODULE_EVALUATE,
             total=display_total,
             completed=display_completed,
             detail="等待运行结果",
         )
-        self.progress.begin(
+        self.progress.prepare(
             MODULE_REPORT,
             total=display_total,
             completed=display_completed,

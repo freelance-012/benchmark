@@ -416,6 +416,8 @@ class ExecutionModuleTests(unittest.TestCase):
         ):
             self.assertEqual(progress.completed(module), (4, 4))
         self.assertEqual(progress.status(MODULE_TOTAL), "warning")
+        self.assertIn((MODULE_EVALUATE, "waiting"), progress.transitions)
+        self.assertIn((MODULE_REPORT, "waiting"), progress.transitions)
 
     def test_multiple_successful_segments_have_isolated_results(self) -> None:
         algorithm_root = self._copy_git_algorithm("algorithm2")
@@ -1377,6 +1379,7 @@ class _RecordingProgress:
     def __init__(self) -> None:
         self.tasks = {}
         self.estimates = []
+        self.transitions = []
 
     def prepare(
         self,
@@ -1398,15 +1401,25 @@ class _RecordingProgress:
         module: str,
         *,
         total: Optional[int] = None,
-        completed: int = 0,
+        completed: Optional[int] = None,
         detail: str = "",
     ) -> None:
-        self.tasks[module] = {
-            "total": total,
-            "completed": completed,
-            "detail": detail,
-            "status": "running",
-        }
+        task = self.tasks.setdefault(
+            module,
+            {
+                "total": total,
+                "completed": 0,
+                "detail": "",
+                "status": "waiting",
+            },
+        )
+        if total is not None:
+            task["total"] = total
+        if completed is not None:
+            task["completed"] = completed
+        task["detail"] = detail
+        task["status"] = "running"
+        self.transitions.append((module, "running"))
 
     def describe(self, module: str, detail: str) -> None:
         self.tasks[module]["detail"] = detail
@@ -1420,6 +1433,12 @@ class _RecordingProgress:
     ) -> None:
         self.tasks[module]["detail"] = detail
         self.estimates.append((module, eta_seconds, detail))
+
+    def wait(self, module: str, detail: str = "") -> None:
+        self.tasks[module]["status"] = "waiting"
+        if detail:
+            self.tasks[module]["detail"] = detail
+        self.transitions.append((module, "waiting"))
 
     def advance(self, module: str, *, amount: int = 1, detail: str = "") -> None:
         self.tasks[module]["completed"] += amount

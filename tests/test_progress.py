@@ -4,6 +4,8 @@ import io
 import unittest
 
 from slam_benchmark.progress import (
+    MODULE_EVALUATE,
+    MODULE_REPORT,
     MODULE_RUN,
     MODULE_TOTAL,
     TerminalProgress,
@@ -40,6 +42,24 @@ class TerminalProgressTests(unittest.TestCase):
             progress.finish(MODULE_RUN, status="success")
             progress.finish(MODULE_TOTAL, status="success")
             self.assertEqual(str(_RemainingTimeColumn().render(run_task)), "")
+            renderables = tuple(progress._progress.get_renderables())
+            self.assertEqual(len(renderables), 1)
+            self.assertEqual(
+                renderables[0].width,
+                progress._progress.console.width - 2,
+            )
+            lines = progress._progress.console.render_lines(
+                progress._progress.get_renderable(),
+                pad=False,
+            )
+            rendered_widths = [
+                sum(segment.cell_length for segment in line) for line in lines
+            ]
+            self.assertLessEqual(
+                max(rendered_widths),
+                progress._progress.console.width - 2,
+            )
+            self.assertFalse(progress._progress.expand)
             progress.refresh()
 
         rendered = output.getvalue()
@@ -64,6 +84,63 @@ class TerminalProgressTests(unittest.TestCase):
             progress.finish(MODULE_TOTAL, status="success")
 
         self.assertEqual(output.getvalue(), "")
+
+    def test_waiting_modules_pause_and_accumulate_only_active_time(self) -> None:
+        output = io.StringIO()
+        clock = _FakeClock()
+
+        with TerminalProgress(
+            (MODULE_EVALUATE, MODULE_REPORT),
+            output=output,
+            force_terminal=True,
+            enabled=True,
+            auto_refresh=False,
+            get_time=clock,
+        ) as progress:
+            progress.prepare(
+                MODULE_EVALUATE,
+                total=2,
+                detail="等待运行结果",
+            )
+            task = progress._progress.tasks[progress._task_ids[MODULE_EVALUATE]]
+            clock.advance(100)
+            self.assertIsNone(task.elapsed)
+            self.assertEqual(task.fields["state"], "waiting")
+            self.assertEqual(str(_RemainingTimeColumn().render(task)), "")
+
+            progress.begin(MODULE_EVALUATE, detail="评估 Segment 1")
+            clock.advance(3)
+            progress.advance(MODULE_EVALUATE, detail="Segment 1：success")
+            progress.wait(MODULE_EVALUATE, detail="等待下一段运行结果")
+
+            self.assertEqual(task.completed, 1)
+            self.assertEqual(task.elapsed, 3)
+            self.assertEqual(task.fields["state"], "waiting")
+            clock.advance(50)
+            self.assertEqual(task.elapsed, 3)
+
+            progress.begin(MODULE_EVALUATE, detail="评估 Segment 2")
+            self.assertEqual(task.completed, 1)
+            clock.advance(2)
+            progress.advance(MODULE_EVALUATE, detail="Segment 2：success")
+            progress.wait(MODULE_EVALUATE, detail="等待下一段运行结果")
+            progress.finish(MODULE_EVALUATE, status="success")
+
+            self.assertEqual(task.completed, 2)
+            self.assertEqual(task.elapsed, 5)
+            clock.advance(100)
+            self.assertEqual(task.elapsed, 5)
+
+
+class _FakeClock:
+    def __init__(self) -> None:
+        self.value = 0.0
+
+    def __call__(self) -> float:
+        return self.value
+
+    def advance(self, seconds: float) -> None:
+        self.value += seconds
 
 
 if __name__ == "__main__":
