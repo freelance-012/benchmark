@@ -475,6 +475,18 @@ Max、Min、Count，以及断点切分后的 Segment 数量；未设置时默认
 标红。算法运行失败、评估失败和未运行 Segment 也保留一行，并显示运行
 状态、评估状态和失败原因。
 
+已经存在的 test 目录可以单独重新生成 Excel：
+
+```bash
+benchmark report \
+  --test-dir /path/to/result/ALGORITHM_ID/TEST_ID
+```
+
+该命令从 test 目录中读取冻结配置、Segment 回执和已经保存的
+`metrics.json`，自动判断 SF VO 或 SF VLOC 表格格式，并重新生成或覆盖
+`run_summary.xlsx`。它不会重新编译算法、运行数据集或调用 voeval；缺失或
+失败的运行与评估结果仍按保存的事实写入表格。
+
 运行成功后，系统按数据集契约把 voeval 使用的单份外参复制到
 当前数字 Segment 目录：RK3399 使用 `calib_raw.yaml`，RK3588 使用
 `bottom_calib_raw.yaml`。`sf_vloc` 的 `vloc.txt` 和 `home_point.txt`

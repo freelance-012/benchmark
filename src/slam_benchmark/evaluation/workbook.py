@@ -43,6 +43,14 @@ class _SummaryRow:
 
 
 class SummaryWorkbookWriter:
+    def generate_from_test(self, test_root: Path) -> Path:
+        root = test_root.expanduser().resolve()
+        if not root.is_dir():
+            raise EvaluationError(f"test directory does not exist: {root}")
+        algorithm_config = _load_yaml(root / "config" / "algorithm.yaml")
+        workflow = _workflow_from_algorithm_config(algorithm_config)
+        return self.update(root, workflow)
+
     def update(self, test_root: Path, workflow: str) -> Path:
         if workflow not in {
             EVALUATION_WORKFLOW_SF_VO,
@@ -380,6 +388,23 @@ def _metric_keys(workflow: str) -> Tuple[str, ...]:
     if workflow == EVALUATION_WORKFLOW_SF_VLOC:
         return VLOC_METRIC_KEYS
     raise EvaluationError(f"unsupported summary workflow: {workflow}")
+
+
+def _workflow_from_algorithm_config(config: Mapping[str, Any]) -> str:
+    contract = config.get("contract")
+    if not isinstance(contract, Mapping):
+        raise EvaluationError(
+            "frozen algorithm configuration has no contract mapping"
+        )
+    workflow = contract.get("evaluation_workflow")
+    if not isinstance(workflow, str) or workflow not in {
+        EVALUATION_WORKFLOW_SF_VO,
+        EVALUATION_WORKFLOW_SF_VLOC,
+    }:
+        raise EvaluationError(
+            "frozen algorithm contract has no supported evaluation workflow"
+        )
+    return workflow
 
 
 def _rpe_delta_from_run_config(config: Mapping[str, Any]) -> Tuple[float, str]:

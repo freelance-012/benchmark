@@ -24,10 +24,13 @@ from .evaluation import (
     DEFAULT_RPE_DELTA_UNIT,
     DEFAULT_RPE_DELTA_VALUE,
     RPE_DELTA_UNITS,
+    EvaluationError,
+    SummaryWorkbookWriter,
 )
 from .progress import (
     MODULE_BUILD,
     MODULE_DATASET,
+    MODULE_REPORT,
     MODULE_TOTAL,
     PIPELINE_MODULES,
     ProgressReporter,
@@ -133,6 +136,17 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         help="resume an incomplete test result directory",
     )
+
+    report = modules.add_parser(
+        "report",
+        help="rebuild run_summary.xlsx from one saved test directory",
+    )
+    report.add_argument(
+        "--test-dir",
+        required=True,
+        type=Path,
+        help="saved result/ALGORITHM_ID/TEST_ID directory",
+    )
     return parser
 
 
@@ -145,6 +159,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         "dataset": (MODULE_TOTAL, MODULE_DATASET),
         "build": (MODULE_TOTAL, MODULE_BUILD),
         "run": PIPELINE_MODULES,
+        "report": (MODULE_TOTAL, MODULE_REPORT),
     }[args.module]
     with debug_mode(debug), TerminalProgress(
         modules,
@@ -157,7 +172,9 @@ def main(argv: Optional[List[str]] = None) -> int:
                 return _run_build_command(args, progress)
             if args.module == "run":
                 return _run_execution_command(args, progress)
-        except (DatasetError, BuildError, ExecutionError) as exc:
+            if args.module == "report":
+                return _run_report_command(args, progress)
+        except (DatasetError, BuildError, ExecutionError, EvaluationError) as exc:
             progress.close()
             print(f"error: {exc}", file=sys.stderr)
             return 2
@@ -290,6 +307,27 @@ def _run_execution_command(
     if summary.failure_reason:
         print(f"reason: {summary.failure_reason}", file=sys.stderr)
     return 130 if summary.status == "interrupted" else 1
+
+
+def _run_report_command(
+    args: argparse.Namespace,
+    progress: ProgressReporter,
+) -> int:
+    progress.begin(MODULE_TOTAL, total=1, detail="生成 Excel 汇总")
+    progress.begin(MODULE_REPORT, total=1, detail="读取 test 数据")
+    output_path = SummaryWorkbookWriter().generate_from_test(args.test_dir)
+    progress.advance(MODULE_REPORT, detail="Excel 已生成")
+    progress.finish(
+        MODULE_REPORT,
+        status="success",
+        detail=str(output_path),
+        complete=True,
+    )
+    progress.advance(MODULE_TOTAL, detail="报告生成完成")
+    progress.finish(MODULE_TOTAL, status="success", complete=True)
+    progress.close()
+    print(f"[SUCCESS] report: {output_path}")
+    return 0
 
 
 def _progress_status(status: str) -> str:

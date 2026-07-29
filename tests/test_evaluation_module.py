@@ -1,14 +1,17 @@
 from __future__ import annotations
 
+import io
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from typing import Optional
 
 import yaml
 from openpyxl import load_workbook
 
+from slam_benchmark.cli import main
 from slam_benchmark.evaluation import (
     EvaluationError,
     EvaluationRequest,
@@ -75,6 +78,46 @@ class EvaluationModuleTests(unittest.TestCase):
         self.assertEqual(sheet["K3"].value, "success")
         self.assertEqual(sheet["L3"].value, "success")
         self.assertIsNone(sheet["M3"].value)
+
+    def test_report_cli_rebuilds_excel_from_saved_test_data(self) -> None:
+        self._freeze_algorithm_contract("sf_vo")
+        self._freeze_segment_order(1)
+        segment_dir = self._write_run_receipt(0, "success")
+        self.service.evaluate(self._request(0, "sf_vo", segment_dir))
+        self.fake_voeval.unlink()
+
+        output = io.StringIO()
+        errors = io.StringIO()
+        with redirect_stdout(output), redirect_stderr(errors):
+            exit_code = main(
+                [
+                    "report",
+                    "--test-dir",
+                    str(self.test_root),
+                ]
+            )
+
+        workbook_path = self.test_root / "run_summary.xlsx"
+        self.assertEqual(exit_code, 0)
+        self.assertTrue(workbook_path.is_file())
+        self.assertIn(str(workbook_path), output.getvalue())
+        workbook = load_workbook(workbook_path)
+        self.addCleanup(workbook.close)
+        sheet = workbook["Summary"]
+        self.assertEqual(sheet["C3"].value, str(self.root / "data-0"))
+        self.assertEqual(sheet["D3"].value, 1)
+
+    def test_report_cli_rejects_missing_test_directory(self) -> None:
+        output = io.StringIO()
+        errors = io.StringIO()
+        missing = self.root / "missing-test"
+
+        with redirect_stdout(output), redirect_stderr(errors):
+            exit_code = main(["report", "--test-dir", str(missing)])
+
+        self.assertEqual(exit_code, 2)
+        self.assertIn("test directory does not exist", errors.getvalue())
+        self.assertFalse((missing / "run_summary.xlsx").exists())
 
     def test_custom_frame_delta_reaches_voeval_metrics_and_workbook(self) -> None:
         self._freeze_segment_order(1, rpe_delta_value=5, rpe_delta_unit="f")
@@ -252,6 +295,20 @@ class EvaluationModuleTests(unittest.TestCase):
                         }
                         for run_index in range(count)
                     ],
+                },
+                sort_keys=False,
+            ),
+            encoding="utf-8",
+        )
+
+    def _freeze_algorithm_contract(self, workflow: str) -> None:
+        (self.test_root / "config" / "algorithm.yaml").write_text(
+            yaml.safe_dump(
+                {
+                    "algorithm": "algorithm",
+                    "contract": {
+                        "evaluation_workflow": workflow,
+                    },
                 },
                 sort_keys=False,
             ),
