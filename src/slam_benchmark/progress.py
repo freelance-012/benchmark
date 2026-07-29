@@ -233,7 +233,7 @@ class _StateColumn(ProgressColumn):
         return Text(text, style=style, overflow="ellipsis", no_wrap=True)
 
 
-class TerminalProgress(AbstractContextManager["TerminalProgress"]):
+class TerminalProgress(AbstractContextManager):
     """One live terminal table containing overall and per-module progress bars."""
 
     def __init__(
