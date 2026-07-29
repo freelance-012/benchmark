@@ -218,6 +218,27 @@ _CONTRACTS = {
             ),
         ),
     ),
+    "sfvision": AlgorithmContract(
+        algorithm_id="sfvision",
+        display_name="sfvision",
+        contract_version=2,
+        entrypoint_relative_path=Path("bin/sfvision"),
+        numbered_output_counter_relative_path=Path("log_count.txt"),
+        fixed_output_relative_path=Path("vo.txt"),
+        output_validator="vo",
+        evaluation_workflow=EVALUATION_WORKFLOW_SF_VLOC,
+        dataset_run_contracts=(
+            DatasetRunContract(
+                dataset_type="rk3399",
+                required_input_roles=(
+                    "imu_path",
+                    "image_path",
+                    "image_timestamps_path",
+                    "calibration_path",
+                ),
+            ),
+        ),
+    ),
 }
 
 

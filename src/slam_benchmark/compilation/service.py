@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import os
 import signal
@@ -314,7 +315,14 @@ def _execute_script(
                 finally:
                     finish_process_streams(streams)
             except OSError as exc:
-                if process is not None:
+                msg = f"cannot start build script: {exc}"
+                if exc.errno == errno.ENOEXEC:
+                    msg += (
+                        " — 脚本缺少 shebang 行（如 #!/usr/bin/env bash），"
+                        "请在脚本首行添加 shebang"
+                    )
+                    failure_reason = msg
+                elif process is not None:
                     _terminate_process_group(process)
                     exit_code = process.returncode
                 status = "failed"

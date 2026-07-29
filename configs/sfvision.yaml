@@ -1,0 +1,19 @@
+algorithm: sfvision
+
+build:
+  algorithm_path: /home/shanggaoxing/04_code_dir/rk3399/external/sf/sfvision
+  script_path: /home/shanggaoxing/04_code_dir/rk3399/external/sf/sfvision/build.sh
+
+run:
+  # sfvision 自己在这个根目录下维护 log_count.txt 和编号输出目录。
+  output_root_path: /home/shanggaoxing/data/sfvision
+
+
+  # 算法要求不同命令格式时，增加 command_template：
+  #
+  #   command_template: >-
+  #     "{executable}" --log={dataset_path}
+  #     --start_time={start_ts:.3f} --end_time={end_ts:.3f}
+  command_template: >-
+    "{executable}" --log={dataset_path}
+    --start_time={start_ts:.3f} --end_time={end_ts:.3f}
