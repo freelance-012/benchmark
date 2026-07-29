@@ -20,10 +20,15 @@ from ..algorithms.contracts import (
     EVALUATION_WORKFLOW_SF_VO,
 )
 from ..debug import debug_command
-from .models import EvaluationReceipt, EvaluationRequest
+from .models import (
+    DEFAULT_RPE_DELTA_UNIT,
+    DEFAULT_RPE_DELTA_VALUE,
+    EvaluationReceipt,
+    EvaluationRequest,
+    normalize_rpe_delta,
+)
 
 DEFAULT_EVALUATION_TIMEOUT_SECONDS = 30 * 60.0
-RPE_DELTA_METERS = 100.0
 VO_RPE_METRIC_KEYS = ("rmse", "mean", "median", "max", "min", "count")
 VO_METRIC_KEYS = VO_RPE_METRIC_KEYS + ("segment_count",)
 VLOC_METRIC_KEYS = (
@@ -64,6 +69,13 @@ class EvaluationService:
             raise EvaluationError(
                 f"unsupported evaluation workflow: {request.workflow}"
             )
+        try:
+            rpe_delta_value, rpe_delta_unit = normalize_rpe_delta(
+                request.rpe_delta_value,
+                request.rpe_delta_unit,
+            )
+        except ValueError as exc:
+            raise EvaluationError(str(exc)) from exc
 
         evaluation_dir = request.evaluation_dir.expanduser().resolve()
         metrics_path = evaluation_dir / "metrics.json"
@@ -83,7 +95,12 @@ class EvaluationService:
                 f"cannot prepare evaluation output directory {evaluation_dir}: {exc}"
             ) from exc
 
-        command = self._build_command(request, metrics_path)
+        command = self._build_command(
+            request,
+            metrics_path,
+            rpe_delta_value,
+            rpe_delta_unit,
+        )
         with debug_command(
             "EVALUATE",
             command,
@@ -106,6 +123,8 @@ class EvaluationService:
                     _, invalid_metrics = load_metrics(
                         metrics_path,
                         request.workflow,
+                        expected_delta_value=rpe_delta_value,
+                        expected_delta_unit=rpe_delta_unit,
                     )
                 except EvaluationError as exc:
                     status = "failed"
@@ -147,6 +166,8 @@ class EvaluationService:
         self,
         request: EvaluationRequest,
         metrics_path: Path,
+        rpe_delta_value: float,
+        rpe_delta_unit: str,
     ) -> Tuple[str, ...]:
         return self.voeval_command + (
             request.workflow,
@@ -155,9 +176,9 @@ class EvaluationService:
             "--dataset",
             request.dataset_type,
             "--delta",
-            f"{RPE_DELTA_METERS:.1f}",
+            _format_command_number(rpe_delta_value),
             "--unit",
-            "m",
+            rpe_delta_unit,
             "--output",
             str(metrics_path),
             "--verbose",
@@ -227,6 +248,9 @@ class EvaluationService:
 def load_metrics(
     metrics_path: Path,
     workflow: str,
+    *,
+    expected_delta_value: float = DEFAULT_RPE_DELTA_VALUE,
+    expected_delta_unit: str = DEFAULT_RPE_DELTA_UNIT,
 ) -> Tuple[Dict[str, Any], Tuple[str, ...]]:
     try:
         payload: Any = json.loads(metrics_path.read_text(encoding="utf-8"))
@@ -240,6 +264,13 @@ def load_metrics(
         )
 
     if workflow == EVALUATION_WORKFLOW_SF_VO:
+        try:
+            normalized_delta_value, normalized_delta_unit = normalize_rpe_delta(
+                expected_delta_value,
+                expected_delta_unit,
+            )
+        except ValueError as exc:
+            raise EvaluationError(str(exc)) from exc
         group_name = "rpe_translation_m"
         metric_keys = VO_RPE_METRIC_KEYS
         group = payload.get(group_name)
@@ -254,12 +285,16 @@ def load_metrics(
             delta_value = float(group["delta_value"])
         except (KeyError, TypeError, ValueError) as exc:
             raise EvaluationError("voeval metrics has an invalid RPE delta") from exc
-        if not math.isclose(delta_value, RPE_DELTA_METERS):
+        if not math.isclose(delta_value, normalized_delta_value):
             raise EvaluationError(
-                f"voeval metrics uses RPE delta {delta_value:g}, expected 100.0"
+                "voeval metrics uses RPE delta "
+                f"{delta_value:g}, expected {normalized_delta_value:g}"
             )
-        if group.get("delta_unit") != "m":
-            raise EvaluationError("voeval metrics RPE delta unit must be m")
+        if group.get("delta_unit") != normalized_delta_unit:
+            raise EvaluationError(
+                "voeval metrics RPE delta unit is "
+                f"{group.get('delta_unit')!r}, expected {normalized_delta_unit!r}"
+            )
     elif workflow == EVALUATION_WORKFLOW_SF_VLOC:
         group_name = "vloc_metrics"
         metric_keys = VLOC_METRIC_KEYS
@@ -322,6 +357,10 @@ def _non_negative_integer_or_none(value: Any) -> Optional[float]:
     if number is None or number < 0 or not number.is_integer():
         return None
     return number
+
+
+def _format_command_number(value: float) -> str:
+    return f"{value:.15g}"
 
 
 def _save_yaml_atomic(path: Path, payload: Mapping[str, Any]) -> None:

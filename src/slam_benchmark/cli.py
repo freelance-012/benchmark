@@ -20,6 +20,11 @@ from .execution.models import (
     RunRequest,
 )
 from .execution.service import ExecutionError, ExecutionService
+from .evaluation import (
+    DEFAULT_RPE_DELTA_UNIT,
+    DEFAULT_RPE_DELTA_VALUE,
+    RPE_DELTA_UNITS,
+)
 from .progress import (
     MODULE_BUILD,
     MODULE_DATASET,
@@ -105,6 +110,18 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=30 * 60.0,
         help="timeout for each Segment algorithm process; default: 1800",
+    )
+    run.add_argument(
+        "--rpe-delta",
+        type=float,
+        default=DEFAULT_RPE_DELTA_VALUE,
+        help="RPE interval value; default: 100",
+    )
+    run.add_argument(
+        "--rpe-unit",
+        choices=RPE_DELTA_UNITS,
+        default=DEFAULT_RPE_DELTA_UNIT,
+        help="RPE interval unit: m=meters, f=frames; default: m",
     )
     run.add_argument(
         "--fail-fast",
@@ -246,6 +263,8 @@ def _run_execution_command(
         failure_policy=policy,
         failure_threshold=args.failure_threshold,
         timeout_seconds=args.timeout_seconds,
+        rpe_delta_value=args.rpe_delta,
+        rpe_delta_unit=args.rpe_unit,
     )
     service = ExecutionService(progress=progress)
     if args.resume is None:

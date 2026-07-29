@@ -10,9 +10,11 @@ import yaml
 from openpyxl import load_workbook
 
 from slam_benchmark.evaluation import (
+    EvaluationError,
     EvaluationRequest,
     EvaluationService,
     SummaryWorkbookWriter,
+    normalize_rpe_delta,
 )
 
 
@@ -69,6 +71,55 @@ class EvaluationModuleTests(unittest.TestCase):
         self.assertEqual(sheet["J3"].value, "success")
         self.assertEqual(sheet["K3"].value, "success")
         self.assertIsNone(sheet["L3"].value)
+
+    def test_custom_frame_delta_reaches_voeval_metrics_and_workbook(self) -> None:
+        self._freeze_segment_order(1, rpe_delta_value=5, rpe_delta_unit="f")
+        segment_dir = self._write_run_receipt(0, "success")
+        receipt = self.service.evaluate(
+            self._request(
+                0,
+                "sf_vo",
+                segment_dir,
+                rpe_delta_value=5,
+                rpe_delta_unit="f",
+            )
+        )
+
+        workbook_path = self.writer.update(self.test_root, "sf_vo")
+        delta_index = receipt.command.index("--delta")
+        unit_index = receipt.command.index("--unit")
+        self.assertEqual(receipt.command[delta_index + 1], "5")
+        self.assertEqual(receipt.command[unit_index + 1], "f")
+        metrics = self._yaml(segment_dir / "evaluation" / "metrics.json")
+        self.assertEqual(metrics["rpe_translation_m"]["delta_value"], 5)
+        self.assertEqual(metrics["rpe_translation_m"]["delta_unit"], "f")
+
+        workbook = load_workbook(workbook_path)
+        self.addCleanup(workbook.close)
+        self.assertEqual(
+            workbook["Summary"]["C1"].value,
+            "RPE 平移误差 (delta=5f)",
+        )
+
+    def test_rpe_delta_validation_rejects_invalid_values(self) -> None:
+        self.assertEqual(normalize_rpe_delta(25.5, "m"), (25.5, "m"))
+        self.assertEqual(normalize_rpe_delta(5, "f"), (5.0, "f"))
+        with self.assertRaisesRegex(ValueError, "positive finite"):
+            normalize_rpe_delta(0, "m")
+        with self.assertRaisesRegex(ValueError, "positive integer"):
+            normalize_rpe_delta(1.5, "f")
+
+        self._freeze_segment_order(1)
+        segment_dir = self._write_run_receipt(0, "success")
+        with self.assertRaisesRegex(EvaluationError, "positive finite"):
+            self.service.evaluate(
+                self._request(
+                    0,
+                    "sf_vo",
+                    segment_dir,
+                    rpe_delta_value=0,
+                )
+            )
 
     def test_sf_vloc_colors_horizontal_error_and_keeps_failed_run(self) -> None:
         self._freeze_segment_order(6)
@@ -165,10 +216,20 @@ class EvaluationModuleTests(unittest.TestCase):
         self.assertEqual(sheet["J4"].value, "not_run")
         self.assertEqual(sheet["K4"].value, "not_run")
 
-    def _freeze_segment_order(self, count: int) -> None:
+    def _freeze_segment_order(
+        self,
+        count: int,
+        *,
+        rpe_delta_value: float = 100.0,
+        rpe_delta_unit: str = "m",
+    ) -> None:
         (self.test_root / "config" / "run.yaml").write_text(
             yaml.safe_dump(
                 {
+                    "evaluation": {
+                        "rpe_delta_value": rpe_delta_value,
+                        "rpe_delta_unit": rpe_delta_unit,
+                    },
                     "segment_order": [
                         {
                             "run_index": run_index,
@@ -212,6 +273,8 @@ class EvaluationModuleTests(unittest.TestCase):
         segment_dir: Path,
         *,
         data_dir: Optional[Path] = None,
+        rpe_delta_value: float = 100.0,
+        rpe_delta_unit: str = "m",
     ) -> EvaluationRequest:
         selected_data_dir = data_dir or (self.root / f"data-{run_index}")
         selected_data_dir.mkdir(exist_ok=True)
@@ -226,6 +289,8 @@ class EvaluationModuleTests(unittest.TestCase):
             data_dir=selected_data_dir,
             log_dir=segment_dir,
             evaluation_dir=segment_dir / "evaluation",
+            rpe_delta_value=rpe_delta_value,
+            rpe_delta_unit=rpe_delta_unit,
         )
 
     def _write_fake_voeval(self) -> Path:
@@ -242,6 +307,8 @@ mode = sys.argv[1]
 data_dir = Path(sys.argv[2])
 log_dir = Path(sys.argv[3])
 output = Path(sys.argv[sys.argv.index("--output") + 1])
+delta_value = float(sys.argv[sys.argv.index("--delta") + 1])
+delta_unit = sys.argv[sys.argv.index("--unit") + 1]
 
 if "force-evaluation-failure" in data_dir.name:
     print("intentional evaluator failure")
@@ -252,8 +319,8 @@ if mode == "sf_vo":
     payload = {
         "mode": mode,
         "rpe_translation_m": {
-            "delta_value": 100.0,
-            "delta_unit": "m",
+            "delta_value": delta_value,
+            "delta_unit": delta_unit,
             "rmse": 1.0,
             "mean": 2.0,
             "median": 3.0,

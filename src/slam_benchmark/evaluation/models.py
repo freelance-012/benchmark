@@ -2,11 +2,32 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
 EVALUATION_RECEIPT_SCHEMA_VERSION = 1
+DEFAULT_RPE_DELTA_VALUE = 100.0
+DEFAULT_RPE_DELTA_UNIT = "m"
+RPE_DELTA_UNITS = ("m", "f")
+
+
+def normalize_rpe_delta(value: float, unit: str) -> Tuple[float, str]:
+    try:
+        normalized_value = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("RPE delta must be a number") from exc
+    if not math.isfinite(normalized_value) or normalized_value <= 0:
+        raise ValueError("RPE delta must be a positive finite number")
+
+    normalized_unit = str(unit).strip().lower()
+    if normalized_unit not in RPE_DELTA_UNITS:
+        choices = ", ".join(RPE_DELTA_UNITS)
+        raise ValueError(f"RPE delta unit must be one of: {choices}")
+    if normalized_unit == "f" and not normalized_value.is_integer():
+        raise ValueError("RPE frame delta must be a positive integer")
+    return normalized_value, normalized_unit
 
 
 @dataclass(frozen=True)
@@ -21,6 +42,8 @@ class EvaluationRequest:
     data_dir: Path
     log_dir: Path
     evaluation_dir: Path
+    rpe_delta_value: float = DEFAULT_RPE_DELTA_VALUE
+    rpe_delta_unit: str = DEFAULT_RPE_DELTA_UNIT
 
 
 @dataclass(frozen=True)

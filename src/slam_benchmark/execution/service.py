@@ -18,10 +18,13 @@ from ..datasets.paths import resolve_dataset_file
 from ..datasets.service import DatasetManager
 from ..debug import debug_enabled, debug_output
 from ..evaluation import (
+    DEFAULT_RPE_DELTA_UNIT,
+    DEFAULT_RPE_DELTA_VALUE,
     EvaluationError,
     EvaluationRequest,
     EvaluationService,
     SummaryWorkbookWriter,
+    normalize_rpe_delta,
 )
 from ..progress import (
     MODULE_BUILD,
@@ -769,6 +772,7 @@ class ExecutionService:
                 detail=f"{progress_detail}：{segment_status}",
             )
             evaluation_status, evaluation_failure = self._evaluate_and_update_summary(
+                request,
                 contract,
                 instance,
                 segment,
@@ -844,6 +848,7 @@ class ExecutionService:
 
     def _evaluate_and_update_summary(
         self,
+        request: RunRequest,
         contract: AlgorithmContract,
         instance: DatasetInstance,
         segment: Segment,
@@ -876,6 +881,8 @@ class ExecutionService:
                         data_dir=instance.root_path,
                         log_dir=paths.segment_dir,
                         evaluation_dir=paths.evaluation_dir,
+                        rpe_delta_value=request.rpe_delta_value,
+                        rpe_delta_unit=request.rpe_delta_unit,
                     )
                 )
             except EvaluationError as exc:
@@ -1348,6 +1355,34 @@ class ExecutionService:
             raise ExecutionError("failure threshold changed; start a new run")
         if checkpoint.timeout_seconds != request.timeout_seconds:
             raise ExecutionError("run timeout changed; start a new run")
+        raw_evaluation = frozen_run.get("evaluation")
+        if raw_evaluation is None:
+            frozen_delta_value = DEFAULT_RPE_DELTA_VALUE
+            frozen_delta_unit = DEFAULT_RPE_DELTA_UNIT
+        elif isinstance(raw_evaluation, dict):
+            try:
+                frozen_delta_value, frozen_delta_unit = normalize_rpe_delta(
+                    raw_evaluation["rpe_delta_value"],
+                    raw_evaluation["rpe_delta_unit"],
+                )
+            except (KeyError, ValueError) as exc:
+                raise ExecutionError(
+                    f"frozen run RPE delta configuration is invalid: {exc}"
+                ) from exc
+        else:
+            raise ExecutionError("frozen run evaluation configuration is invalid")
+        try:
+            current_delta_value, current_delta_unit = normalize_rpe_delta(
+                request.rpe_delta_value,
+                request.rpe_delta_unit,
+            )
+        except ValueError as exc:
+            raise ExecutionError(str(exc)) from exc
+        if (
+            frozen_delta_value != current_delta_value
+            or frozen_delta_unit != current_delta_unit
+        ):
+            raise ExecutionError("RPE delta changed; start a new run")
 
         frozen_configs = frozen_run.get("dataset_configs")
         current_configs = [
@@ -1509,6 +1544,13 @@ class ExecutionService:
             raise ExecutionError("failure threshold must not be negative")
         if request.timeout_seconds <= 0:
             raise ExecutionError("run timeout must be greater than zero")
+        try:
+            normalize_rpe_delta(
+                request.rpe_delta_value,
+                request.rpe_delta_unit,
+            )
+        except ValueError as exc:
+            raise ExecutionError(str(exc)) from exc
         if not request.dataset_configs:
             raise ExecutionError("at least one dataset config is required")
 

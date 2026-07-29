@@ -8,6 +8,7 @@ from typing import Any, Dict, Optional, Tuple
 
 from ..compilation.models import BuildConfig
 from ..datasets.models import DatasetScanConfig
+from ..evaluation.models import DEFAULT_RPE_DELTA_UNIT, DEFAULT_RPE_DELTA_VALUE
 
 RUN_RECEIPT_SCHEMA_VERSION = 2
 RUN_CHECKPOINT_SCHEMA_VERSION = 2
@@ -26,6 +27,8 @@ class RunRequest:
     failure_policy: str = FAILURE_POLICY_CONTINUE
     failure_threshold: int = 1
     timeout_seconds: float = 30 * 60.0
+    rpe_delta_value: float = DEFAULT_RPE_DELTA_VALUE
+    rpe_delta_unit: str = DEFAULT_RPE_DELTA_UNIT
     results_root: Path = Path("result")
 
 

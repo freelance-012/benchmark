@@ -13,6 +13,7 @@ import yaml
 
 from ..algorithms.contracts import AlgorithmContract
 from ..datasets.models import DatasetInstance
+from ..evaluation.models import normalize_rpe_delta
 from .models import (
     RUN_CONFIG_SCHEMA_VERSION,
     RunCheckpoint,
@@ -40,6 +41,13 @@ class RunStore:
         issues: Sequence[RunIssue],
     ) -> None:
         config_root = test_root / "config"
+        try:
+            rpe_delta_value, rpe_delta_unit = normalize_rpe_delta(
+                request.rpe_delta_value,
+                request.rpe_delta_unit,
+            )
+        except ValueError as exc:
+            raise RunStorageError(str(exc)) from exc
         algorithm_payload = {
             "schema_version": RUN_CONFIG_SCHEMA_VERSION,
             "algorithm": request.build_config.algorithm_id,
@@ -67,6 +75,10 @@ class RunStore:
             "failure_policy": request.failure_policy,
             "failure_threshold": request.failure_threshold,
             "timeout_seconds": request.timeout_seconds,
+            "evaluation": {
+                "rpe_delta_value": rpe_delta_value,
+                "rpe_delta_unit": rpe_delta_unit,
+            },
             "dataset_configs": [
                 {
                     "root_path": str(item.root_path),

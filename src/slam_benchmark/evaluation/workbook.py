@@ -6,7 +6,7 @@ import os
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 import yaml
 
@@ -15,6 +15,11 @@ from ..algorithms.contracts import (
     EVALUATION_WORKFLOW_SF_VO,
 )
 from ..debug import debug_input, debug_output
+from .models import (
+    DEFAULT_RPE_DELTA_UNIT,
+    DEFAULT_RPE_DELTA_VALUE,
+    normalize_rpe_delta,
+)
 from .service import (
     EvaluationError,
     VLOC_METRIC_KEYS,
@@ -49,9 +54,15 @@ class SummaryWorkbookWriter:
             source=root / "dataset",
             workflow=workflow,
         )
-        rows = self._load_rows(root, workflow)
+        rows, rpe_delta_value, rpe_delta_unit = self._load_rows(root, workflow)
         output_path = root / SUMMARY_FILENAME
-        self._write_atomic(output_path, workflow, rows)
+        self._write_atomic(
+            output_path,
+            workflow,
+            rows,
+            rpe_delta_value,
+            rpe_delta_unit,
+        )
         debug_output(
             "REPORT",
             input=root / "dataset",
@@ -64,8 +75,9 @@ class SummaryWorkbookWriter:
         self,
         test_root: Path,
         workflow: str,
-    ) -> Tuple[_SummaryRow, ...]:
+    ) -> Tuple[Tuple[_SummaryRow, ...], float, str]:
         run_config = _load_yaml(test_root / "config" / "run.yaml")
+        rpe_delta_value, rpe_delta_unit = _rpe_delta_from_run_config(run_config)
         raw_order = run_config.get("segment_order")
         if not isinstance(raw_order, list):
             raise EvaluationError("frozen run configuration has no segment_order")
@@ -117,7 +129,12 @@ class SummaryWorkbookWriter:
                     if evaluation_status == "success":
                         metrics_path = segment_dir / "evaluation" / "metrics.json"
                         try:
-                            metrics, _ = load_metrics(metrics_path, workflow)
+                            metrics, _ = load_metrics(
+                                metrics_path,
+                                workflow,
+                                expected_delta_value=rpe_delta_value,
+                                expected_delta_unit=rpe_delta_unit,
+                            )
                             values = metric_values(metrics, workflow)
                         except EvaluationError as exc:
                             evaluation_status = "failed"
@@ -133,13 +150,19 @@ class SummaryWorkbookWriter:
                     metrics=values,
                 )
             )
-        return tuple(sorted(rows, key=lambda row: row.run_index))
+        return (
+            tuple(sorted(rows, key=lambda row: row.run_index)),
+            rpe_delta_value,
+            rpe_delta_unit,
+        )
 
     @staticmethod
     def _write_atomic(
         output_path: Path,
         workflow: str,
         rows: Tuple[_SummaryRow, ...],
+        rpe_delta_value: float,
+        rpe_delta_unit: str,
     ) -> None:
         try:
             from openpyxl import Workbook
@@ -172,7 +195,10 @@ class SummaryWorkbookWriter:
             sheet.merge_cells("I1:I2")
             sheet["A1"] = "运行编号"
             sheet["B1"] = "路径"
-            sheet["C1"] = "RPE 平移误差 (delta=100.0m)"
+            sheet["C1"] = (
+                "RPE 平移误差 "
+                f"(delta={_format_rpe_delta(rpe_delta_value, rpe_delta_unit)})"
+            )
             sheet["I1"] = "Segment 数量"
             for column, title in enumerate(metric_titles, start=3):
                 sheet.cell(row=2, column=column, value=title)
@@ -322,6 +348,31 @@ def _metric_keys(workflow: str) -> Tuple[str, ...]:
     if workflow == EVALUATION_WORKFLOW_SF_VLOC:
         return VLOC_METRIC_KEYS
     raise EvaluationError(f"unsupported summary workflow: {workflow}")
+
+
+def _rpe_delta_from_run_config(config: Mapping[str, Any]) -> Tuple[float, str]:
+    raw_evaluation = config.get("evaluation")
+    if raw_evaluation is None:
+        return DEFAULT_RPE_DELTA_VALUE, DEFAULT_RPE_DELTA_UNIT
+    if not isinstance(raw_evaluation, Mapping):
+        raise EvaluationError("frozen run evaluation configuration is invalid")
+    try:
+        return normalize_rpe_delta(
+            raw_evaluation["rpe_delta_value"],
+            raw_evaluation["rpe_delta_unit"],
+        )
+    except (KeyError, ValueError) as exc:
+        raise EvaluationError(
+            f"frozen run RPE delta configuration is invalid: {exc}"
+        ) from exc
+
+
+def _format_rpe_delta(value: float, unit: str) -> str:
+    if unit == "m" and value.is_integer():
+        number = f"{value:.1f}"
+    else:
+        number = f"{value:.15g}"
+    return f"{number}{unit}"
 
 
 def _column_letter(column: int) -> str:

@@ -340,6 +340,21 @@ benchmark run \
   --dataset-config /path/to/dataset.yaml
 ```
 
+SF VO 的 RPE 间隔默认是 `100 m`。可以在运行时填写其他数值和单位：
+
+```bash
+benchmark run \
+  --algorithm-config /path/to/algorithm.yaml \
+  --dataset-config /path/to/dataset.yaml \
+  --rpe-delta 50 \
+  --rpe-unit m
+```
+
+`--rpe-unit` 支持 `m`（米）和 `f`（帧）。米制间隔可以使用正数或小数，
+例如 `25.5 m`；帧间隔必须是正整数，例如
+`--rpe-delta 200 --rpe-unit f`。该数值会同时用于 voeval 评估、指标校验和
+Excel 汇总表头。
+
 只运行指定数据集目录或子树：
 
 ```bash
@@ -367,19 +382,38 @@ benchmark run \
   --failure-threshold 0
 ```
 
-`--fail-fast` 不等待失败阈值，第一次数据集或算法运行失败就保存当前事实并返回非零退出码。用户主动按下 `Ctrl+C` 时，两种模式都会停止。
+`--fail-fast` 不等待失败阈值，第一次数据集或算法运行失败就保存当前事实并返回非零退出码。算法 Segment 运行过程中，用户主动按下 `Ctrl+C` 时，两种模式都会终止当前算法进程并停止本次测试；系统保留已经写入的日志、回执和 `checkpoint.yaml`。
 
-上下文未变化时，可以从结果目录记录的未完成数据集恢复：
+恢复操作需要用户手动执行，不会在程序或工作站重启后自动开始。恢复时，算法配置、数据集配置、所选数据集、失败策略、失败阈值、超时时间以及 RPE 间隔必须与原运行一致；Git 状态、构建脚本、构建产物、算法契约以及数据集和 Segment 信息也必须保持不变，否则系统拒绝恢复。
+
+默认模式使用下面的命令恢复：
+
+```bash
+RESULT="/path/to/result/ALGORITHM_ID/TEST_ID"
+
+benchmark run \
+  --algorithm-config /path/to/algorithm.yaml \
+  --dataset-config /path/to/dataset.yaml \
+  --resume "$RESULT"
+```
+
+如果原运行使用了 `--fail-fast`，恢复时也必须保留：
 
 ```bash
 benchmark run \
   --algorithm-config /path/to/algorithm.yaml \
   --dataset-config /path/to/dataset.yaml \
   --fail-fast \
-  --resume /path/to/result/ALGORITHM_ID/TEST_ID
+  --resume "$RESULT"
 ```
 
-系统读取当前 commit，并在当前算法目录下自动分配下一个 `test_id`。完整 commit 保存在回执和冻结配置中，不作为目录层级。编译产物保留在算法仓库中，默认结果结构为：
+如果原运行还指定了 `--failure-threshold`、`--timeout-seconds`、
+`--rpe-delta` 或 `--rpe-unit`，恢复命令也必须传入相同的值。恢复继续使用
+原来的 `TEST_ID`，不会创建新的测试目录；系统保留之前已经完成的数据集，
+删除当前未完成数据集的数字 Segment 目录，并从该数据集的第一个有效
+Segment 重新运行。
+
+普通新运行会在当前算法结果目录下自动分配下一个 `test_id`。完整 commit 保存在回执和冻结配置中，不作为目录层级。编译产物保留在算法仓库中，默认结果结构为：
 
 ```text
 result/
@@ -433,11 +467,12 @@ result/
 不会调用 `voeval`，也不会生成 `run_summary.xlsx`。
 
 `run_summary.xlsx` 只有一个 `Summary` 工作表，第一列为运行编号，第二列
-为可点击的数字 Segment 结果路径。SF VO 汇总 100m RPE 平移误差的 RMSE、
-Mean、Median、Max、Min、Count，以及断点切分后的 Segment 数量；SF VLOC
-汇总轨迹长度以及水平位置、垂直位置和欧拉角的平均与最大误差。VLOC 的
-`mean_error_pos_xy` 大于 20m 时标黄，大于 50m 时标红。算法运行失败、
-评估失败和未运行 Segment 也保留一行，并显示运行状态、评估状态和失败原因。
+为可点击的数字 Segment 结果路径。SF VO 按本次运行选择的 RPE 间隔汇总
+平移误差的 RMSE、Mean、Median、Max、Min、Count，以及断点切分后的
+Segment 数量；未设置时默认使用 `100 m`。SF VLOC 汇总轨迹长度以及水平
+位置、垂直位置和欧拉角的平均与最大误差。VLOC 的 `mean_error_pos_xy`
+大于 20m 时标黄，大于 50m 时标红。算法运行失败、评估失败和未运行
+Segment 也保留一行，并显示运行状态、评估状态和失败原因。
 
 运行成功后，系统按数据集契约把 voeval 使用的单份外参复制到
 当前数字 Segment 目录：RK3399 使用 `calib_raw.yaml`，RK3588 使用
@@ -447,8 +482,6 @@ Mean、Median、Max、Min、Count，以及断点切分后的 Segment 数量；SF
 RK3588 的 `front_calib_raw.yaml` 不进入评估目录。
 
 所有有效 Segment 按本次 run 的稳定顺序从 0 开始预先编号；默认模式下，成功或失败的 Segment 都会创建对应数字目录并保存事实。只有 `--fail-fast`、人工中断或不可恢复错误使后续 Segment 未启动时，异常运行中才可能出现编号空缺。目录层级不再按数据集分组，但每个 `receipt.yaml` 仍记录原始数据集、Segment 和起止时间戳。数据集运行结果集中保存在 `checkpoint.yaml`，不再生成 `dataset_receipt.yaml`。
-
-恢复未完成的数据集时，仅清理该数据集尚未提交检查点的数字 Segment 目录并从该数据集起点重新运行；之前已经提交完成的数据集不重复运行。
 
 不安装本项目且不使用虚拟环境时，系统 Python 必须已经能够导入 PyYAML、
 Rich 和 openpyxl：

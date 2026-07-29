@@ -590,11 +590,13 @@ import sys
 from pathlib import Path
 
 output = Path(sys.argv[sys.argv.index("--output") + 1])
+delta_value = float(sys.argv[sys.argv.index("--delta") + 1])
+delta_unit = sys.argv[sys.argv.index("--unit") + 1]
 output.write_text(json.dumps({
     "mode": sys.argv[1],
     "rpe_translation_m": {
-        "delta_value": 100.0,
-        "delta_unit": "m",
+        "delta_value": delta_value,
+        "delta_unit": delta_unit,
         "rmse": 1.1,
         "mean": 1.2,
         "median": 1.3,
@@ -616,15 +618,31 @@ print("integration voeval complete")
         )
 
         summary = service.start(
-            self._request("algorithm1", algorithm_root, collection, "rk3399")
+            self._request(
+                "algorithm1",
+                algorithm_root,
+                collection,
+                "rk3399",
+                rpe_delta_value=5,
+                rpe_delta_unit="f",
+            )
         )
 
         self.assertEqual(summary.status, "success")
         evaluation_dir = summary.result_root / "dataset" / "0" / "evaluation"
         self.assertTrue((evaluation_dir / "metrics.json").is_file())
+        evaluation_receipt = self._yaml(evaluation_dir / "receipt.yaml")
+        self.assertEqual(evaluation_receipt["status"], "success")
+        delta_index = evaluation_receipt["command"].index("--delta")
+        unit_index = evaluation_receipt["command"].index("--unit")
+        self.assertEqual(evaluation_receipt["command"][delta_index + 1], "5")
+        self.assertEqual(evaluation_receipt["command"][unit_index + 1], "f")
         self.assertEqual(
-            self._yaml(evaluation_dir / "receipt.yaml")["status"],
-            "success",
+            self._yaml(summary.result_root / "config" / "run.yaml")["evaluation"],
+            {
+                "rpe_delta_value": 5.0,
+                "rpe_delta_unit": "f",
+            },
         )
         self.assertIn(
             "integration voeval complete",
@@ -633,6 +651,7 @@ print("integration voeval complete")
         workbook = load_workbook(summary.result_root / "run_summary.xlsx")
         self.addCleanup(workbook.close)
         sheet = workbook["Summary"]
+        self.assertEqual(sheet["C1"].value, "RPE 平移误差 (delta=5f)")
         self.assertEqual(sheet["C3"].value, 1.1)
         self.assertEqual(sheet["H3"].value, 20)
         self.assertEqual(sheet["I3"].value, 2)
@@ -890,6 +909,12 @@ print("integration voeval complete")
             "algorithm configuration or contract changed",
         ):
             service.resume(changed_request, first.result_root)
+
+        with self.assertRaisesRegex(ExecutionError, "RPE delta changed"):
+            service.resume(
+                replace(request, rpe_delta_value=50),
+                first.result_root,
+            )
 
         resumed = service.resume(request, first.result_root)
 
@@ -1284,6 +1309,8 @@ print("integration voeval complete")
         failure_policy: str = "continue",
         failure_threshold: int = 1,
         timeout_seconds: float = 30.0,
+        rpe_delta_value: float = 100.0,
+        rpe_delta_unit: str = "m",
     ) -> RunRequest:
         return RunRequest(
             build_config=BuildConfig(
@@ -1306,6 +1333,8 @@ print("integration voeval complete")
             failure_policy=failure_policy,
             failure_threshold=failure_threshold,
             timeout_seconds=timeout_seconds,
+            rpe_delta_value=rpe_delta_value,
+            rpe_delta_unit=rpe_delta_unit,
             results_root=self.results_root,
         )
 
