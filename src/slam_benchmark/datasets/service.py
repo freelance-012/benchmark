@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import os
+import shutil
+import tempfile
 from pathlib import Path
 from typing import List, Optional, Set, Tuple
 
@@ -14,7 +17,7 @@ from .contracts import (
 from .errors import DatasetError, StorageError
 from .handlers import DatasetHandler, get_handler
 from .models import DatasetInstance, DatasetScanConfig, ScanDiagnostic, ScanReport
-from .paths import is_within
+from .paths import is_within, resolve_dataset_file
 from .storage import DatasetInstanceStore
 
 
@@ -75,6 +78,8 @@ class DatasetManager:
 
         for root in candidates:
             try:
+                if persist:
+                    self._sync_compatibility_files(root)
                 instance, current = self._load_or_register(
                     root, refresh=refresh, persist=persist
                 )
@@ -87,6 +92,35 @@ class DatasetManager:
 
         datasets.sort(key=lambda item: (str(item.root_path), item.dataset_id))
         return ScanReport(tuple(datasets), tuple(diagnostics))
+
+    def _sync_compatibility_files(self, root: Path) -> None:
+        for source_name, destination_name in (
+            self.handler.contract.compatibility_file_copies
+        ):
+            source = resolve_dataset_file(
+                root / source_name,
+                root,
+                f"compatibility source {source_name}",
+            )
+            destination = root / destination_name
+            temporary: Optional[Path] = None
+            try:
+                with tempfile.NamedTemporaryFile(
+                    dir=root,
+                    prefix=f".{destination_name}.",
+                    suffix=".tmp",
+                    delete=False,
+                ) as handle:
+                    temporary = Path(handle.name)
+                shutil.copyfile(source, temporary)
+                os.replace(temporary, destination)
+            except OSError as exc:
+                raise StorageError(
+                    f"cannot copy {source} to {destination}: {exc}"
+                ) from exc
+            finally:
+                if temporary is not None and temporary.exists():
+                    temporary.unlink(missing_ok=True)
 
     def catalog(self) -> ScanReport:
         with debug_command(

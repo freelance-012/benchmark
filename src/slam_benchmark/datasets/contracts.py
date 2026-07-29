@@ -22,6 +22,7 @@ class DatasetContract:
     calibration_roles: Tuple[str, ...]
     segmentation_rule: str
     evaluation_calibration_role: Optional[str] = None
+    compatibility_file_copies: Tuple[Tuple[str, str], ...] = ()
 
     def expected_paths(self, root: Path) -> Dict[str, Path]:
         return {role: root / filename for role, filename in self.required_files}
@@ -45,6 +46,7 @@ _CONTRACTS = {
         calibration_roles=("calibration_path",),
         segmentation_rule="flight_mode",
         evaluation_calibration_role="calibration_path",
+        compatibility_file_copies=(("calib_raw.yaml", "calib.yaml"),),
     ),
     "rk3588": DatasetContract(
         type_id="rk3588",
