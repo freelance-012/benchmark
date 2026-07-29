@@ -35,6 +35,7 @@ SUMMARY_FILENAME = "run_summary.xlsx"
 class _SummaryRow:
     run_index: int
     result_path: Path
+    dataset_path: Path
     run_status: str
     evaluation_status: str
     failure_reason: Optional[str]
@@ -78,6 +79,7 @@ class SummaryWorkbookWriter:
     ) -> Tuple[Tuple[_SummaryRow, ...], float, str]:
         run_config = _load_yaml(test_root / "config" / "run.yaml")
         rpe_delta_value, rpe_delta_unit = _rpe_delta_from_run_config(run_config)
+        dataset_paths = _dataset_paths_from_run_config(run_config)
         raw_order = run_config.get("segment_order")
         if not isinstance(raw_order, list):
             raise EvaluationError("frozen run configuration has no segment_order")
@@ -90,6 +92,11 @@ class SummaryWorkbookWriter:
                 run_index = int(item["run_index"])
             except (TypeError, ValueError) as exc:
                 raise EvaluationError("frozen run_index is invalid") from exc
+            dataset_id = item.get("dataset_id")
+            if not isinstance(dataset_id, str) or dataset_id not in dataset_paths:
+                raise EvaluationError(
+                    "frozen segment_order references an unknown dataset"
+                )
             segment_dir = (test_root / "dataset" / str(run_index)).resolve()
             run_status = "not_run"
             evaluation_status = "not_run"
@@ -144,6 +151,7 @@ class SummaryWorkbookWriter:
                 _SummaryRow(
                     run_index=run_index,
                     result_path=segment_dir,
+                    dataset_path=dataset_paths[dataset_id],
                     run_status=run_status,
                     evaluation_status=evaluation_status,
                     failure_reason=failure_reason,
@@ -187,22 +195,28 @@ class SummaryWorkbookWriter:
         red_fill = PatternFill("solid", fgColor="FFC7CE")
 
         metric_keys = _metric_keys(workflow)
+        metric_start_column = 4
         if workflow == EVALUATION_WORKFLOW_SF_VO:
             metric_titles = ("RMSE", "Mean", "Median", "Max", "Min", "Count")
             sheet.merge_cells("A1:A2")
             sheet.merge_cells("B1:B2")
-            sheet.merge_cells("C1:H1")
-            sheet.merge_cells("I1:I2")
+            sheet.merge_cells("C1:C2")
+            sheet.merge_cells("D1:I1")
+            sheet.merge_cells("J1:J2")
             sheet["A1"] = "运行编号"
-            sheet["B1"] = "路径"
-            sheet["C1"] = (
+            sheet["B1"] = "结果路径"
+            sheet["C1"] = "数据集路径"
+            sheet["D1"] = (
                 "RPE 平移误差 "
                 f"(delta={_format_rpe_delta(rpe_delta_value, rpe_delta_unit)})"
             )
-            sheet["I1"] = "Segment 数量"
-            for column, title in enumerate(metric_titles, start=3):
+            sheet["J1"] = "Segment 数量"
+            for column, title in enumerate(
+                metric_titles,
+                start=metric_start_column,
+            ):
                 sheet.cell(row=2, column=column, value=title)
-            status_column = 10
+            status_column = 11
             data_start_row = 3
             for column, title in enumerate(
                 ("运行状态", "评估状态", "失败原因"),
@@ -220,7 +234,8 @@ class SummaryWorkbookWriter:
         else:
             headers = (
                 "运行编号",
-                "路径",
+                "结果路径",
+                "数据集路径",
                 *metric_keys,
                 "运行状态",
                 "评估状态",
@@ -228,7 +243,7 @@ class SummaryWorkbookWriter:
             )
             for column, title in enumerate(headers, start=1):
                 sheet.cell(row=1, column=column, value=title)
-            status_column = 3 + len(metric_keys)
+            status_column = metric_start_column + len(metric_keys)
             data_start_row = 2
             sheet.freeze_panes = "A2"
 
@@ -256,11 +271,21 @@ class SummaryWorkbookWriter:
             )
             path_cell.hyperlink = summary.result_path.as_uri()
             path_cell.style = "Hyperlink"
+            dataset_cell = sheet.cell(
+                row=row_number,
+                column=3,
+                value=str(summary.dataset_path),
+            )
+            dataset_cell.hyperlink = summary.dataset_path.as_uri()
+            dataset_cell.style = "Hyperlink"
 
-            for metric_offset, value in enumerate(summary.metrics, start=3):
+            for metric_offset, value in enumerate(
+                summary.metrics,
+                start=metric_start_column,
+            ):
                 cell = sheet.cell(row=row_number, column=metric_offset, value=value)
                 if value is not None:
-                    metric_key = metric_keys[metric_offset - 3]
+                    metric_key = metric_keys[metric_offset - metric_start_column]
                     if metric_key in {"count", "segment_count"}:
                         cell.number_format = "0"
                     else:
@@ -283,7 +308,11 @@ class SummaryWorkbookWriter:
             )
 
             if workflow == EVALUATION_WORKFLOW_SF_VLOC:
-                horizontal_error = sheet.cell(row=row_number, column=4)
+                horizontal_error = sheet.cell(
+                    row=row_number,
+                    column=metric_start_column
+                    + metric_keys.index("mean_error_pos_xy"),
+                )
                 if horizontal_error.value is not None:
                     if float(horizontal_error.value) > 50.0:
                         horizontal_error.fill = red_fill
@@ -293,11 +322,14 @@ class SummaryWorkbookWriter:
             for column in range(1, total_columns + 1):
                 cell = sheet.cell(row=row_number, column=column)
                 cell.border = border
-                cell.alignment = left if column in {2, total_columns} else center
+                cell.alignment = (
+                    left if column in {2, 3, total_columns} else center
+                )
 
         sheet.column_dimensions["A"].width = 12
         sheet.column_dimensions["B"].width = 58
-        for column in range(3, status_column):
+        sheet.column_dimensions["C"].width = 58
+        for column in range(metric_start_column, status_column):
             sheet.column_dimensions[_column_letter(column)].width = 22
         sheet.column_dimensions[_column_letter(status_column)].width = 14
         sheet.column_dimensions[_column_letter(status_column + 1)].width = 14
@@ -365,6 +397,30 @@ def _rpe_delta_from_run_config(config: Mapping[str, Any]) -> Tuple[float, str]:
         raise EvaluationError(
             f"frozen run RPE delta configuration is invalid: {exc}"
         ) from exc
+
+
+def _dataset_paths_from_run_config(
+    config: Mapping[str, Any],
+) -> Dict[str, Path]:
+    raw_datasets = config.get("dataset_order")
+    if not isinstance(raw_datasets, list):
+        raise EvaluationError("frozen run configuration has no dataset_order")
+
+    dataset_paths: Dict[str, Path] = {}
+    for item in raw_datasets:
+        if not isinstance(item, Mapping):
+            raise EvaluationError("frozen dataset_order contains an invalid item")
+        dataset_id = item.get("dataset_id")
+        root_path = item.get("root_path")
+        if not isinstance(dataset_id, str) or not isinstance(root_path, str):
+            raise EvaluationError("frozen dataset_order contains an invalid item")
+        dataset_path = Path(root_path).expanduser()
+        if not dataset_path.is_absolute():
+            raise EvaluationError("frozen dataset path must be absolute")
+        if dataset_id in dataset_paths:
+            raise EvaluationError("frozen dataset_order contains a duplicate dataset")
+        dataset_paths[dataset_id] = dataset_path.resolve()
+    return dataset_paths
 
 
 def _format_rpe_delta(value: float, unit: str) -> str:

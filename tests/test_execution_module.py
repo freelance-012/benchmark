@@ -578,7 +578,7 @@ class ExecutionModuleTests(unittest.TestCase):
 
     def test_successful_segment_runs_voeval_and_updates_summary(self) -> None:
         algorithm_root = self._copy_git_algorithm("algorithm1")
-        collection, _ = self._create_collection(
+        collection, dataset = self._create_collection(
             "rk3399",
             "successful-evaluation",
         )
@@ -651,12 +651,14 @@ print("integration voeval complete")
         workbook = load_workbook(summary.result_root / "run_summary.xlsx")
         self.addCleanup(workbook.close)
         sheet = workbook["Summary"]
-        self.assertEqual(sheet["C1"].value, "RPE 平移误差 (delta=5f)")
-        self.assertEqual(sheet["C3"].value, 1.1)
-        self.assertEqual(sheet["H3"].value, 20)
-        self.assertEqual(sheet["I3"].value, 2)
-        self.assertEqual(sheet["J3"].value, "success")
+        self.assertEqual(sheet["C1"].value, "数据集路径")
+        self.assertEqual(sheet["C3"].value, str(dataset))
+        self.assertEqual(sheet["D1"].value, "RPE 平移误差 (delta=5f)")
+        self.assertEqual(sheet["D3"].value, 1.1)
+        self.assertEqual(sheet["I3"].value, 20)
+        self.assertEqual(sheet["J3"].value, 2)
         self.assertEqual(sheet["K3"].value, "success")
+        self.assertEqual(sheet["L3"].value, "success")
 
     def test_sf_vloc_requires_algorithm_home_point_output(self) -> None:
         algorithm_root = self._copy_git_algorithm(

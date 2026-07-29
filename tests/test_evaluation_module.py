@@ -54,23 +54,27 @@ class EvaluationModuleTests(unittest.TestCase):
         self.addCleanup(workbook.close)
         sheet = workbook["Summary"]
         self.assertEqual(sheet["A1"].value, "运行编号")
-        self.assertEqual(sheet["C1"].value, "RPE 平移误差 (delta=100.0m)")
+        self.assertEqual(sheet["B1"].value, "结果路径")
+        self.assertEqual(sheet["C1"].value, "数据集路径")
+        self.assertEqual(sheet["D1"].value, "RPE 平移误差 (delta=100.0m)")
         self.assertEqual(
-            [sheet.cell(row=2, column=column).value for column in range(3, 9)],
+            [sheet.cell(row=2, column=column).value for column in range(4, 10)],
             ["RMSE", "Mean", "Median", "Max", "Min", "Count"],
         )
         self.assertEqual(sheet["A3"].value, 0)
         self.assertEqual(sheet["B3"].value, str(segment_dir))
         self.assertTrue(sheet["B3"].hyperlink.target.startswith("file:///"))
+        self.assertEqual(sheet["C3"].value, str(self.root / "data-0"))
+        self.assertTrue(sheet["C3"].hyperlink.target.startswith("file:///"))
         self.assertEqual(
-            [sheet.cell(row=3, column=column).value for column in range(3, 9)],
+            [sheet.cell(row=3, column=column).value for column in range(4, 10)],
             [1, 2, 3, 4, 0.5, 6],
         )
-        self.assertEqual(sheet["I1"].value, "Segment 数量")
-        self.assertEqual(sheet["I3"].value, 3)
-        self.assertEqual(sheet["J3"].value, "success")
+        self.assertEqual(sheet["J1"].value, "Segment 数量")
+        self.assertEqual(sheet["J3"].value, 3)
         self.assertEqual(sheet["K3"].value, "success")
-        self.assertIsNone(sheet["L3"].value)
+        self.assertEqual(sheet["L3"].value, "success")
+        self.assertIsNone(sheet["M3"].value)
 
     def test_custom_frame_delta_reaches_voeval_metrics_and_workbook(self) -> None:
         self._freeze_segment_order(1, rpe_delta_value=5, rpe_delta_unit="f")
@@ -97,7 +101,7 @@ class EvaluationModuleTests(unittest.TestCase):
         workbook = load_workbook(workbook_path)
         self.addCleanup(workbook.close)
         self.assertEqual(
-            workbook["Summary"]["C1"].value,
+            workbook["Summary"]["D1"].value,
             "RPE 平移误差 (delta=5f)",
         )
 
@@ -141,10 +145,11 @@ class EvaluationModuleTests(unittest.TestCase):
         self.addCleanup(workbook.close)
         sheet = workbook["Summary"]
         self.assertEqual(
-            [sheet.cell(row=1, column=column).value for column in range(1, 10)],
+            [sheet.cell(row=1, column=column).value for column in range(1, 11)],
             [
                 "运行编号",
-                "路径",
+                "结果路径",
+                "数据集路径",
                 "trajectory_length_m",
                 "mean_error_pos_xy",
                 "mean_error_pos_z",
@@ -154,20 +159,21 @@ class EvaluationModuleTests(unittest.TestCase):
                 "max_error_euler",
             ],
         )
-        self.assertEqual(sheet["D2"].value, 10)
-        self.assertEqual(sheet["D3"].value, 20)
-        self.assertEqual(sheet["D4"].value, 25)
-        self.assertEqual(sheet["D5"].value, 50)
-        self.assertEqual(sheet["D6"].value, 55)
-        self.assertNotEqual(sheet["D2"].fill.fill_type, "solid")
-        self.assertNotEqual(sheet["D3"].fill.fill_type, "solid")
-        self.assertTrue(sheet["D4"].fill.fgColor.rgb.endswith("FFF2CC"))
-        self.assertTrue(sheet["D5"].fill.fgColor.rgb.endswith("FFF2CC"))
-        self.assertTrue(sheet["D6"].fill.fgColor.rgb.endswith("FFC7CE"))
-        self.assertEqual(sheet["J7"].value, "failed")
-        self.assertEqual(sheet["K7"].value, "not_run")
-        self.assertEqual(sheet["L7"].value, "algorithm failed")
+        self.assertEqual(sheet["E2"].value, 10)
+        self.assertEqual(sheet["E3"].value, 20)
+        self.assertEqual(sheet["E4"].value, 25)
+        self.assertEqual(sheet["E5"].value, 50)
+        self.assertEqual(sheet["E6"].value, 55)
+        self.assertNotEqual(sheet["E2"].fill.fill_type, "solid")
+        self.assertNotEqual(sheet["E3"].fill.fill_type, "solid")
+        self.assertTrue(sheet["E4"].fill.fgColor.rgb.endswith("FFF2CC"))
+        self.assertTrue(sheet["E5"].fill.fgColor.rgb.endswith("FFF2CC"))
+        self.assertTrue(sheet["E6"].fill.fgColor.rgb.endswith("FFC7CE"))
+        self.assertEqual(sheet["K7"].value, "failed")
+        self.assertEqual(sheet["L7"].value, "not_run")
+        self.assertEqual(sheet["M7"].value, "algorithm failed")
         self.assertEqual(sheet["B7"].value, str(failed_dir))
+        self.assertEqual(sheet["C7"].value, str(self.root / "data-5"))
 
     def test_voeval_failure_is_recorded_without_metrics(self) -> None:
         self._freeze_segment_order(1)
@@ -195,10 +201,10 @@ class EvaluationModuleTests(unittest.TestCase):
         workbook = load_workbook(workbook_path)
         self.addCleanup(workbook.close)
         sheet = workbook["Summary"]
-        self.assertEqual(sheet["J3"].value, "success")
-        self.assertEqual(sheet["K3"].value, "failed")
-        self.assertIn("code 7", sheet["L3"].value)
-        self.assertIsNone(sheet["C3"].value)
+        self.assertEqual(sheet["K3"].value, "success")
+        self.assertEqual(sheet["L3"].value, "failed")
+        self.assertIn("code 7", sheet["M3"].value)
+        self.assertIsNone(sheet["D3"].value)
 
     def test_summary_lists_planned_but_not_run_segment(self) -> None:
         self._freeze_segment_order(2)
@@ -210,11 +216,11 @@ class EvaluationModuleTests(unittest.TestCase):
         self.addCleanup(workbook.close)
         sheet = workbook["Summary"]
         self.assertEqual(sheet["A3"].value, 0)
-        self.assertEqual(sheet["J3"].value, "failed")
-        self.assertEqual(sheet["K3"].value, "not_run")
+        self.assertEqual(sheet["K3"].value, "failed")
+        self.assertEqual(sheet["L3"].value, "not_run")
         self.assertEqual(sheet["A4"].value, 1)
-        self.assertEqual(sheet["J4"].value, "not_run")
         self.assertEqual(sheet["K4"].value, "not_run")
+        self.assertEqual(sheet["L4"].value, "not_run")
 
     def _freeze_segment_order(
         self,
@@ -230,6 +236,14 @@ class EvaluationModuleTests(unittest.TestCase):
                         "rpe_delta_value": rpe_delta_value,
                         "rpe_delta_unit": rpe_delta_unit,
                     },
+                    "dataset_order": [
+                        {
+                            "dataset_id": f"dataset-{run_index}",
+                            "dataset_type": "rk3399",
+                            "root_path": str(self.root / f"data-{run_index}"),
+                        }
+                        for run_index in range(count)
+                    ],
                     "segment_order": [
                         {
                             "run_index": run_index,
@@ -237,7 +251,7 @@ class EvaluationModuleTests(unittest.TestCase):
                             "segment_id": f"segment-{run_index}",
                         }
                         for run_index in range(count)
-                    ]
+                    ],
                 },
                 sort_keys=False,
             ),
