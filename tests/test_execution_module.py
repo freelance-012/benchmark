@@ -127,16 +127,16 @@ class ExecutionModuleTests(unittest.TestCase):
         self.assertFalse((result_dir / "home_point.txt").exists())
         output_root = algorithm_root.parent / "algorithm1_output"
         self.assertEqual(
-            self._yaml(output_root / "counter.yaml"),
-            {"last_completed": 0},
+            (output_root / "log_count.txt").read_text(encoding="utf-8"),
+            "0\n",
         )
         self.assertEqual(
             (output_root / "0" / "mock_output.txt").read_bytes(),
             (result_dir / "mock_output.txt").read_bytes(),
         )
         self.assertEqual(
-            self._yaml(result_dir / "output_counter.yaml"),
-            {"last_completed": 0},
+            (result_dir / "log_count.txt").read_text(encoding="utf-8"),
+            "0\n",
         )
         receipt = self._yaml(result_dir / "receipt.yaml")
         self.assertEqual(
@@ -180,20 +180,20 @@ class ExecutionModuleTests(unittest.TestCase):
         self.assertEqual(summary.successful_segments, 2)
         output_root = algorithm_root.parent / "algorithm1_output"
         self.assertEqual(
-            self._yaml(output_root / "counter.yaml"),
-            {"last_completed": 1},
+            (output_root / "log_count.txt").read_text(encoding="utf-8"),
+            "1\n",
         )
         self.assertTrue((output_root / "0" / "mock_output.txt").is_file())
         self.assertTrue((output_root / "1" / "mock_output.txt").is_file())
         first_result = summary.result_root / "dataset" / "0"
         second_result = summary.result_root / "dataset" / "1"
         self.assertEqual(
-            self._yaml(first_result / "output_counter.yaml"),
-            {"last_completed": 0},
+            (first_result / "log_count.txt").read_text(encoding="utf-8"),
+            "0\n",
         )
         self.assertEqual(
-            self._yaml(second_result / "output_counter.yaml"),
-            {"last_completed": 1},
+            (second_result / "log_count.txt").read_text(encoding="utf-8"),
+            "1\n",
         )
         self.assertNotEqual(
             (first_result / "mock_output.txt").read_bytes(),
@@ -229,16 +229,17 @@ class ExecutionModuleTests(unittest.TestCase):
     def test_numbered_output_counter_must_advance_exactly_once(self) -> None:
         output_root = self.root / "external numbered output"
         output_root.mkdir()
-        (output_root / "counter.yaml").write_text(
-            "last_completed: -1\n",
+        (output_root / "log_count.txt").write_text(
+            "0\n",
             encoding="utf-8",
         )
         before = read_numbered_output_snapshot(
             output_root,
-            Path("counter.yaml"),
+            Path("log_count.txt"),
             allow_uninitialized=True,
         )
-        numbered_directory = output_root / "0"
+        (output_root / "0").mkdir()
+        numbered_directory = output_root / "1"
         numbered_directory.mkdir()
         (numbered_directory / "mock_output.txt").write_text(
             "output without a counter update\n",
@@ -251,8 +252,26 @@ class ExecutionModuleTests(unittest.TestCase):
         ):
             resolve_numbered_output_sources(
                 before,
-                Path("counter.yaml"),
+                Path("log_count.txt"),
                 (Path("mock_output.txt"),),
+            )
+
+    def test_numbered_output_counter_rejects_yaml_content(self) -> None:
+        output_root = self.root / "YAML counter is no longer supported"
+        output_root.mkdir()
+        (output_root / "log_count.txt").write_text(
+            "last_completed: 0\n",
+            encoding="utf-8",
+        )
+
+        with self.assertRaisesRegex(
+            RunnerError,
+            "must contain only one integer",
+        ):
+            read_numbered_output_snapshot(
+                output_root,
+                Path("log_count.txt"),
+                allow_uninitialized=False,
             )
 
     def test_nonempty_numbered_output_requires_counter(self) -> None:
@@ -265,7 +284,7 @@ class ExecutionModuleTests(unittest.TestCase):
         ):
             read_numbered_output_snapshot(
                 output_root,
-                Path("counter.yaml"),
+                Path("log_count.txt"),
                 allow_uninitialized=True,
             )
 

@@ -8,8 +8,6 @@ import unittest
 from pathlib import Path
 from typing import List, Tuple
 
-import yaml
-
 
 FIXTURE_ROOT = Path(__file__).parent / "fixtures" / "mock_algorithms"
 InputSpec = Tuple[str, str, bool]
@@ -198,9 +196,8 @@ class MockAlgorithmTests(unittest.TestCase):
                 for step in range(5)
             ]
             output_root = algorithm_root.parent / "algorithm1_output"
-            counter_path = output_root / "counter.yaml"
-            counter = yaml.safe_load(counter_path.read_text(encoding="utf-8"))
-            output_index = counter["last_completed"]
+            counter_path = output_root / "log_count.txt"
+            output_index = int(counter_path.read_text(encoding="utf-8"))
             output = output_root / str(output_index) / "mock_output.txt"
             expected_stdout = (
                 "\n".join(progress_lines)
@@ -208,7 +205,7 @@ class MockAlgorithmTests(unittest.TestCase):
                 + expected
                 + f"output_index={output_index}\n"
                 + f"output_directory=../algorithm1_output/{output_index}\n"
-                + "counter_path=../algorithm1_output/counter.yaml\n"
+                + "counter_path=../algorithm1_output/log_count.txt\n"
             )
         else:
             output = algorithm_root / "mock_output.txt"

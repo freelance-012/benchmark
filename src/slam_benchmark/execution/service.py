@@ -684,7 +684,7 @@ class ExecutionService:
                     )
                 except RunnerError as exc:
                     output_checks = {
-                        "output_counter.yaml": {
+                        counter_relative_path.name: {
                             "validator": "numbered_output_counter",
                             "accepted": False,
                             "validation_error": str(exc),
@@ -700,7 +700,7 @@ class ExecutionService:
                         command,
                         accept=True,
                     )
-                    output_checks["output_counter.yaml"] = {
+                    output_checks[counter_relative_path.name] = {
                         "validator": "numbered_output_counter",
                         "exists": True,
                         "format_valid": True,
@@ -748,7 +748,7 @@ class ExecutionService:
                             self.store.copy_result_file(
                                 numbered_after.counter_path,
                                 paths.segment_dir,
-                                Path("output_counter.yaml"),
+                                Path(counter_relative_path.name),
                             )
                         self._copy_evaluation_support_files(
                             contract,

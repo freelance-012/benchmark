@@ -114,10 +114,10 @@ _CONTRACTS = {
     "algorithm1": AlgorithmContract(
         algorithm_id="algorithm1",
         display_name="Mock SF VO Algorithm",
-        contract_version=7,
+        contract_version=8,
         entrypoint_relative_path=Path("build/algorithm1"),
         fixed_output_relative_path=Path("mock_output.txt"),
-        numbered_output_counter_relative_path=Path("counter.yaml"),
+        numbered_output_counter_relative_path=Path("log_count.txt"),
         output_validator="mock_key_value",
         progress_parser="benchmark_json_v1",
         evaluation_workflow=EVALUATION_WORKFLOW_SF_VO,

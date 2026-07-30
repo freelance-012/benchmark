@@ -165,10 +165,15 @@ run:
 ```
 
 `algorithm1` 使用外部编号输出：算法在 `output_root_path` 下维护
-`counter.yaml` 和 `0/`、`1/` 等编号目录。Pipeline 对比运行前后的计数器，
+`log_count.txt` 和 `0/`、`1/` 等编号目录。`log_count.txt` 只保存当前
+编号，例如 `10`，不包含 YAML 字段或其他内容。Pipeline 对比运行前后的计数器，
 只从本次新增的编号目录复制契约规定的输出，并将计数器快照保存到 Segment
-结果中的 `output_counter.yaml`。没有外部编号输出的算法不配置这个路径，
+结果中的 `log_count.txt`。没有外部编号输出的算法不配置这个路径，
 继续从算法工作目录读取固定输出。
+
+已有输出目录需要进行一次迁移：把旧 `counter.yaml` 中的
+`last_completed: N` 转换为只包含 `N` 的 `log_count.txt`，并删除旧文件。
+Pipeline 不再读取 YAML 计数器，也不会根据现有数字目录猜测当前编号。
 
 默认运行命令继续使用算法内置契约规定的位置参数顺序。只有算法要求不同的参数
 前缀或排列时，才增加可选的 `run.command_template`：
