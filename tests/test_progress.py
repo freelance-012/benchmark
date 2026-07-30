@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import unittest
+from unittest import mock
 
 from slam_benchmark.progress import (
     MODULE_EVALUATE,
@@ -84,6 +85,65 @@ class TerminalProgressTests(unittest.TestCase):
             progress.finish(MODULE_TOTAL, status="success")
 
         self.assertEqual(output.getvalue(), "")
+
+    def test_event_driven_refresh_does_not_redraw_unchanged_scan_state(self) -> None:
+        output = io.StringIO()
+        clock = _FakeClock()
+
+        with mock.patch.dict("os.environ", {"TERM": "xterm-256color"}):
+            with TerminalProgress(
+                (MODULE_TOTAL,),
+                output=output,
+                force_terminal=True,
+                enabled=True,
+                get_time=clock,
+            ) as progress:
+                progress.begin(MODULE_TOTAL, total=1, detail="扫描并录入数据集")
+                rendered_after_begin = output.getvalue()
+
+                self.assertFalse(progress._progress.live.auto_refresh)
+                self.assertIsNone(progress._progress.live._refresh_thread)
+
+                clock.advance(60)
+                self.assertEqual(output.getvalue(), rendered_after_begin)
+
+                progress.describe(MODULE_TOTAL, "扫描完成")
+                self.assertGreater(len(output.getvalue()), len(rendered_after_begin))
+
+    def test_event_driven_refresh_throttles_repeated_runtime_estimates(self) -> None:
+        output = io.StringIO()
+        clock = _FakeClock()
+
+        with mock.patch.dict("os.environ", {"TERM": "xterm-256color"}):
+            with TerminalProgress(
+                (MODULE_RUN,),
+                output=output,
+                force_terminal=True,
+                enabled=True,
+                get_time=clock,
+            ) as progress:
+                progress.begin(MODULE_RUN, total=1, detail="运行 Segment")
+                rendered_after_begin = len(output.getvalue())
+
+                progress.estimate(MODULE_RUN, eta_seconds=60)
+                rendered_after_first_estimate = len(output.getvalue())
+                self.assertGreater(
+                    rendered_after_first_estimate,
+                    rendered_after_begin,
+                )
+
+                progress.estimate(MODULE_RUN, eta_seconds=59)
+                self.assertEqual(
+                    len(output.getvalue()),
+                    rendered_after_first_estimate,
+                )
+
+                clock.advance(0.25)
+                progress.estimate(MODULE_RUN, eta_seconds=58)
+                self.assertGreater(
+                    len(output.getvalue()),
+                    rendered_after_first_estimate,
+                )
 
     def test_waiting_modules_pause_and_accumulate_only_active_time(self) -> None:
         output = io.StringIO()
