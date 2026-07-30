@@ -36,7 +36,12 @@ from ..progress import (
     NullProgressReporter,
     ProgressReporter,
 )
-from .command import CommandError, build_run_command
+from .command import (
+    CommandError,
+    DatasetUnavailableError,
+    build_run_command,
+    verify_run_inputs_available,
+)
 from .models import (
     FAILURE_POLICIES,
     FAILURE_POLICY_FAIL_FAST,
@@ -415,6 +420,21 @@ class ExecutionService:
                     output_parser,
                     total_segments,
                 )
+            except DatasetUnavailableError as exc:
+                checkpoint = replace(
+                    checkpoint,
+                    status="paused",
+                    next_dataset_index=index,
+                    next_segment_index=dataset_start_index,
+                    updated_at=_utc_now(),
+                    failure_reason=(
+                        "dataset unavailable during run; reconnect storage and "
+                        f"resume this test: {exc}"
+                    ),
+                )
+                self._save_checkpoint(test_root, checkpoint)
+                self._finish_execution_progress(contract, checkpoint)
+                return self._summarize(test_root, checkpoint)
             except (BuildError, RunnerError, RunStorageError) as exc:
                 checkpoint = replace(
                     checkpoint,
@@ -547,6 +567,8 @@ class ExecutionService:
                     segment,
                     command_template=request.build_config.command_template,
                 )
+            except DatasetUnavailableError:
+                raise
             except CommandError as exc:
                 failed.append(segment.segment_id)
                 not_run.extend(
@@ -627,6 +649,24 @@ class ExecutionService:
                 total_segments,
                 remaining_estimate,
             )
+            try:
+                verify_run_inputs_available(instance, command)
+            except DatasetUnavailableError as exc:
+                self._save_paused_segment_attempt(
+                    request,
+                    contract,
+                    instance,
+                    segment,
+                    run_index,
+                    entrypoint,
+                    command,
+                    process,
+                    paths,
+                    output_sources,
+                    test_root,
+                    str(exc),
+                )
+                raise
 
             numbered_after: Optional[NumberedOutputSnapshot] = None
             numbered_output_directory: Optional[Path] = None
@@ -1071,7 +1111,9 @@ class ExecutionService:
             checkpoint.dataset_order
         )
 
-        if checkpoint.status == "interrupted":
+        if checkpoint.status == "paused":
+            module_status = "paused"
+        elif checkpoint.status == "interrupted":
             module_status = "interrupted"
         elif not processed_all_datasets:
             module_status = "failed"
@@ -1162,6 +1204,59 @@ class ExecutionService:
             result_dir,
             Path(source.name),
         )
+
+    def _save_paused_segment_attempt(
+        self,
+        request: RunRequest,
+        contract: AlgorithmContract,
+        instance: DatasetInstance,
+        segment: Segment,
+        run_index: int,
+        entrypoint: Path,
+        command: ResolvedRunCommand,
+        process: ProcessResult,
+        paths: SegmentPaths,
+        output_sources: Tuple[Path, ...],
+        test_root: Path,
+        failure_reason: str,
+    ) -> None:
+        output_checks = {
+            str(relative_path): {
+                "accepted": False,
+                "validation_error": (
+                    "output was not accepted because dataset storage became "
+                    f"unavailable: {failure_reason}"
+                ),
+            }
+            for relative_path in contract.output_relative_paths
+        }
+        receipt = self._segment_receipt(
+            test_root,
+            request,
+            contract,
+            instance,
+            segment,
+            run_index,
+            entrypoint,
+            command.argv,
+            process,
+            paths.stdout_path,
+            paths.stderr_path,
+            output_sources,
+            (),
+            output_checks,
+            "paused",
+            False,
+            failure_reason,
+        )
+        self.store.save_segment_receipt(paths, receipt)
+        _debug_run_output(paths, receipt)
+        self.progress.describe(
+            MODULE_RUN,
+            f"{_segment_progress_detail(instance, segment)}：数据不可用，已暂停",
+        )
+        if contract.evaluation_workflow is not None:
+            self._update_summary(test_root, contract)
 
     @staticmethod
     def _segment_receipt(
@@ -1574,6 +1669,8 @@ class ExecutionService:
 def _progress_status(status: str) -> str:
     if status == "success":
         return "success"
+    if status == "paused":
+        return "paused"
     if status == "interrupted":
         return "interrupted"
     return "failed"

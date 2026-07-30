@@ -16,6 +16,10 @@ class CommandError(Exception):
     """One dataset cannot be mapped to the selected algorithm contract."""
 
 
+class DatasetUnavailableError(CommandError):
+    """Dataset storage disappeared after preflight and may become available again."""
+
+
 _BASE_TEMPLATE_FIELDS = {
     "executable",
     "dataset_path",
@@ -134,7 +138,9 @@ def _build_run_command(
 
     dataset_root = instance.root_path.expanduser().resolve()
     if not dataset_root.is_dir():
-        raise CommandError(f"dataset root is not a directory: {dataset_root}")
+        raise DatasetUnavailableError(
+            f"dataset root is not a directory: {dataset_root}"
+        )
 
     try:
         run_contract = contract.run_contract_for(instance.dataset_type)
@@ -199,6 +205,27 @@ def _build_run_command(
     return ResolvedRunCommand(tuple(argv), tuple(input_arguments))
 
 
+def verify_run_inputs_available(
+    instance: DatasetInstance,
+    command: ResolvedRunCommand,
+) -> None:
+    """Detect storage loss after a process exits but before results are accepted."""
+
+    dataset_root = instance.root_path.expanduser().resolve()
+    if not dataset_root.is_dir():
+        raise DatasetUnavailableError(
+            f"dataset root is not a directory: {dataset_root}"
+        )
+    for role, raw_value in command.input_arguments:
+        if raw_value == "<none>":
+            continue
+        path = Path(raw_value).expanduser().resolve()
+        if not path.exists():
+            raise DatasetUnavailableError(
+                f"dataset input does not exist for {role}: {path}"
+            )
+
+
 def _resolve_input(
     instance: DatasetInstance,
     role: str,
@@ -221,7 +248,9 @@ def _resolve_input(
         raise CommandError(f"dataset input path is not absolute for {role}: {path}")
     resolved = path.resolve()
     if not resolved.exists():
-        raise CommandError(f"dataset input does not exist for {role}: {resolved}")
+        raise DatasetUnavailableError(
+            f"dataset input does not exist for {role}: {resolved}"
+        )
     return str(resolved)
 
 

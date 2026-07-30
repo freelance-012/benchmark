@@ -57,6 +57,7 @@ _STATUS_LABELS = {
     "success": "完成",
     "warning": "有异常",
     "failed": "失败",
+    "paused": "已暂停",
     "interrupted": "已中断",
     "skipped": "跳过",
 }
@@ -174,6 +175,7 @@ class _RemainingTimeColumn(ProgressColumn):
             "success",
             "warning",
             "failed",
+            "paused",
             "interrupted",
             "skipped",
         }:
@@ -228,6 +230,7 @@ class _StateColumn(ProgressColumn):
             "success": "green",
             "warning": "yellow",
             "failed": "red",
+            "paused": "yellow",
             "interrupted": "yellow",
             "skipped": "dim",
             "running": "cyan",
@@ -531,20 +534,14 @@ class TerminalProgress(AbstractContextManager):
         task.stop_time = None
 
     def _refresh_after_update(self, *, force: bool) -> None:
-        if (
-            not self.enabled
-            or self._closed
-            or self._closing
-            or self._auto_refresh
-        ):
+        if not self.enabled or self._closed or self._closing or self._auto_refresh:
             return
         current = self._refresh_clock()
         with self._refresh_lock:
             if (
                 not force
                 and self._last_refresh_at is not None
-                and current - self._last_refresh_at
-                < _PROGRESS_REFRESH_INTERVAL_SECONDS
+                and current - self._last_refresh_at < _PROGRESS_REFRESH_INTERVAL_SECONDS
             ):
                 return
             self._progress.refresh()

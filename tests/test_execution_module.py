@@ -14,11 +14,13 @@ from contextlib import redirect_stderr, redirect_stdout
 from dataclasses import replace
 from pathlib import Path
 from typing import Callable, Optional, Tuple
+from unittest import mock
 
 import yaml
 import openpyxl
 from openpyxl import load_workbook
 
+import slam_benchmark.execution.service as execution_service_module
 from slam_benchmark.cli import main
 from slam_benchmark.compilation.models import BuildConfig
 from slam_benchmark.datasets.models import DatasetScanConfig
@@ -418,6 +420,123 @@ class ExecutionModuleTests(unittest.TestCase):
         self.assertEqual(progress.status(MODULE_TOTAL), "warning")
         self.assertIn((MODULE_EVALUATE, "waiting"), progress.transitions)
         self.assertIn((MODULE_REPORT, "waiting"), progress.transitions)
+
+    def test_dataset_disappearing_before_segment_pauses_and_resumes(self) -> None:
+        algorithm_root = self._copy_git_algorithm("algorithm2")
+        collection = self.root / "dataset disappears before run"
+        self._create_sf_dataset(collection, "01-first", "rk3399")
+        second = self._create_sf_dataset(collection, "02-second", "rk3399")
+        request = self._request(
+            "algorithm2",
+            algorithm_root,
+            collection,
+            "rk3399",
+        )
+        service = ExecutionService()
+        offline = self.root / "temporarily offline second dataset"
+        original = execution_service_module.build_run_command
+
+        def disappear_before_command(*args, **kwargs):
+            instance = args[2]
+            if instance.root_path == second and second.exists():
+                second.rename(offline)
+            return original(*args, **kwargs)
+
+        with mock.patch.object(
+            execution_service_module,
+            "build_run_command",
+            side_effect=disappear_before_command,
+        ):
+            paused = service.start(request)
+
+        self.assertEqual(paused.status, "paused")
+        self.assertEqual(paused.successful_datasets, 1)
+        self.assertEqual(paused.failed_datasets, 0)
+        self.assertEqual(paused.not_run_datasets, 1)
+        self.assertEqual(paused.successful_segments, 1)
+        self.assertEqual(paused.failed_segments, 0)
+        self.assertEqual(paused.not_run_segments, 1)
+        self.assertEqual(paused.algorithm_failure_count, 0)
+        self.assertIn(
+            "dataset root is not a directory",
+            paused.failure_reason or "",
+        )
+        checkpoint = self._yaml(paused.result_root / "checkpoint.yaml")
+        self.assertEqual(checkpoint["status"], "paused")
+        self.assertEqual(checkpoint["next_dataset_index"], 1)
+        self.assertEqual(checkpoint["next_segment_index"], 1)
+        self.assertEqual(len(checkpoint["dataset_results"]), 1)
+        self.assertEqual(
+            len(list(paused.result_root.glob("dataset/*/receipt.yaml"))),
+            1,
+        )
+
+        offline.rename(second)
+        resumed = service.resume(request, paused.result_root)
+
+        self.assertEqual(resumed.status, "success")
+        self.assertEqual(resumed.successful_datasets, 2)
+        self.assertEqual(resumed.failed_datasets, 0)
+        self.assertEqual(resumed.not_run_datasets, 0)
+        self.assertEqual(resumed.successful_segments, 2)
+        self.assertEqual(resumed.not_run_segments, 0)
+
+    def test_dataset_disappearing_during_segment_saves_paused_receipt(self) -> None:
+        algorithm_root = self._copy_git_algorithm("algorithm2")
+        collection, dataset = self._create_collection(
+            "rk3399",
+            "dataset disappears during run",
+        )
+        request = self._request(
+            "algorithm2",
+            algorithm_root,
+            collection,
+            "rk3399",
+        )
+        service = ExecutionService()
+        offline = self.root / "temporarily offline active dataset"
+        original = execution_service_module.run_process
+
+        def disappear_after_process(*args, **kwargs):
+            result = original(*args, **kwargs)
+            dataset.rename(offline)
+            return result
+
+        with mock.patch.object(
+            execution_service_module,
+            "run_process",
+            side_effect=disappear_after_process,
+        ):
+            paused = service.start(request)
+
+        self.assertEqual(paused.status, "paused")
+        self.assertEqual(paused.successful_datasets, 0)
+        self.assertEqual(paused.failed_datasets, 0)
+        self.assertEqual(paused.not_run_datasets, 1)
+        self.assertEqual(paused.successful_segments, 0)
+        self.assertEqual(paused.failed_segments, 0)
+        self.assertEqual(paused.not_run_segments, 1)
+        self.assertEqual(paused.algorithm_failure_count, 0)
+        receipt_path = paused.result_root / "dataset" / "0" / "receipt.yaml"
+        receipt = self._yaml(receipt_path)
+        self.assertEqual(receipt["status"], "paused")
+        self.assertFalse(receipt["algorithm_failure"])
+        self.assertIn(
+            "dataset root is not a directory",
+            receipt["failure_reason"],
+        )
+        self.assertTrue((receipt_path.parent / "stdout.log").is_file())
+        self.assertTrue((receipt_path.parent / "stderr.log").is_file())
+
+        offline.rename(dataset)
+        resumed = service.resume(request, paused.result_root)
+
+        self.assertEqual(resumed.status, "success")
+        self.assertEqual(resumed.successful_datasets, 1)
+        self.assertEqual(resumed.successful_segments, 1)
+        self.assertEqual(resumed.algorithm_failure_count, 0)
+        resumed_receipt = self._yaml(receipt_path)
+        self.assertEqual(resumed_receipt["status"], "success")
 
     def test_multiple_successful_segments_have_isolated_results(self) -> None:
         algorithm_root = self._copy_git_algorithm("algorithm2")

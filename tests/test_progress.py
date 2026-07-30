@@ -86,6 +86,28 @@ class TerminalProgressTests(unittest.TestCase):
 
         self.assertEqual(output.getvalue(), "")
 
+    def test_paused_status_is_rendered_without_completing_the_task(self) -> None:
+        output = io.StringIO()
+
+        with TerminalProgress(
+            (MODULE_TOTAL,),
+            output=output,
+            force_terminal=True,
+            enabled=True,
+        ) as progress:
+            progress.begin(MODULE_TOTAL, total=2, detail="运行数据集")
+            progress.finish(
+                MODULE_TOTAL,
+                status="paused",
+                detail="等待数据盘重新挂载",
+            )
+            task = progress._progress.tasks[progress._task_ids[MODULE_TOTAL]]
+
+            self.assertEqual(task.fields["state"], "paused")
+            self.assertEqual(task.completed, 0)
+
+        self.assertIn("已暂停", output.getvalue())
+
     def test_event_driven_refresh_does_not_redraw_unchanged_scan_state(self) -> None:
         output = io.StringIO()
         clock = _FakeClock()
