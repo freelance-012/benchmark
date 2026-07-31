@@ -5,7 +5,7 @@ build:
   script_path: /absolute/path/to/algorithm1/build.sh
 
 run:
-  # algorithm1 自己在这个根目录下维护 counter.yaml 和编号输出目录。
+  # algorithm1 自己在这个根目录下维护 log_count.txt 和编号输出目录。
   output_root_path: /absolute/path/to/algorithm1_output
 
 # 默认使用算法内置契约的位置参数顺序。只有算法要求不同命令格式时，

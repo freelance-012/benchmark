@@ -6,6 +6,7 @@ import math
 import sys
 import time
 from contextlib import AbstractContextManager
+from threading import Lock
 from typing import Any, Callable, IO, Dict, Iterable, Optional, Protocol, Type
 
 from rich.constrain import Constrain
@@ -30,6 +31,7 @@ MODULE_RUN = "run"
 MODULE_EVALUATE = "evaluate"
 MODULE_REPORT = "report"
 _PROGRESS_RIGHT_MARGIN = 2
+_PROGRESS_REFRESH_INTERVAL_SECONDS = 0.25
 
 PIPELINE_MODULES = (
     MODULE_TOTAL,
@@ -55,6 +57,7 @@ _STATUS_LABELS = {
     "success": "完成",
     "warning": "有异常",
     "failed": "失败",
+    "paused": "已暂停",
     "interrupted": "已中断",
     "skipped": "跳过",
 }
@@ -172,6 +175,7 @@ class _RemainingTimeColumn(ProgressColumn):
             "success",
             "warning",
             "failed",
+            "paused",
             "interrupted",
             "skipped",
         }:
@@ -226,6 +230,7 @@ class _StateColumn(ProgressColumn):
             "success": "green",
             "warning": "yellow",
             "failed": "red",
+            "paused": "yellow",
             "interrupted": "yellow",
             "skipped": "dim",
             "running": "cyan",
@@ -243,7 +248,7 @@ class TerminalProgress(AbstractContextManager):
         enabled: Optional[bool] = None,
         output: Optional[IO[str]] = None,
         force_terminal: Optional[bool] = None,
-        auto_refresh: bool = True,
+        auto_refresh: bool = False,
         get_time: Optional[Callable[[], float]] = None,
     ):
         normalized = tuple(str(item).strip().lower() for item in modules)
@@ -267,6 +272,11 @@ class TerminalProgress(AbstractContextManager):
         self._started = set()
         self._finished = set()
         self._closed = False
+        self._closing = False
+        self._auto_refresh = bool(auto_refresh)
+        self._refresh_clock = get_time or time.monotonic
+        self._refresh_lock = Lock()
+        self._last_refresh_at: Optional[float] = None
         self._progress = _ReservedWidthProgress(
             TextColumn(
                 "{task.description}",
@@ -308,6 +318,7 @@ class TerminalProgress(AbstractContextManager):
                 eta_recorded_at=None,
             )
         self._progress.start()
+        self._last_refresh_at = self._refresh_clock()
         return self
 
     def __exit__(
@@ -345,6 +356,7 @@ class TerminalProgress(AbstractContextManager):
             eta_seconds=None,
             eta_recorded_at=None,
         )
+        self._refresh_after_update(force=True)
 
     def begin(
         self,
@@ -370,6 +382,7 @@ class TerminalProgress(AbstractContextManager):
         self._progress.update(task_id, **values)
         self._resume_task(module, task_id)
         self._finished.discard(module)
+        self._refresh_after_update(force=True)
 
     def describe(self, module: str, detail: str) -> None:
         if not self.enabled:
@@ -379,6 +392,7 @@ class TerminalProgress(AbstractContextManager):
             state="running",
             detail=detail,
         )
+        self._refresh_after_update(force=True)
 
     def estimate(
         self,
@@ -391,6 +405,9 @@ class TerminalProgress(AbstractContextManager):
             return
         if not math.isfinite(eta_seconds) or eta_seconds < 0:
             return
+        task_id = self._task_id(module)
+        task = self._progress.tasks[task_id]
+        first_estimate = task.fields.get("eta_seconds") is None
         values = {
             "state": "running",
             "eta_seconds": float(eta_seconds),
@@ -398,7 +415,8 @@ class TerminalProgress(AbstractContextManager):
         }
         if detail:
             values["detail"] = detail
-        self._progress.update(self._task_id(module), **values)
+        self._progress.update(task_id, **values)
+        self._refresh_after_update(force=first_estimate)
 
     def wait(self, module: str, detail: str = "") -> None:
         if not self.enabled:
@@ -418,6 +436,7 @@ class TerminalProgress(AbstractContextManager):
             eta_seconds=None,
             eta_recorded_at=None,
         )
+        self._refresh_after_update(force=True)
 
     def advance(self, module: str, *, amount: int = 1, detail: str = "") -> None:
         if not self.enabled:
@@ -433,6 +452,7 @@ class TerminalProgress(AbstractContextManager):
             state=state,
             detail=detail,
         )
+        self._refresh_after_update(force=True)
 
     def finish(
         self,
@@ -468,10 +488,14 @@ class TerminalProgress(AbstractContextManager):
         if task.stop_time is None:
             self._progress.stop_task(task_id)
         self._finished.add(module)
+        self._refresh_after_update(force=True)
 
     def refresh(self) -> None:
-        if self.enabled:
+        if not self.enabled or self._closed:
+            return
+        with self._refresh_lock:
             self._progress.refresh()
+            self._last_refresh_at = self._refresh_clock()
 
     def close(self) -> None:
         self._close("failed")
@@ -479,10 +503,14 @@ class TerminalProgress(AbstractContextManager):
     def _close(self, unfinished_status: str) -> None:
         if not self.enabled or self._closed:
             return
-        for module in self._started - self._finished:
-            self.finish(module, status=unfinished_status)
-        self._progress.stop()
-        self._closed = True
+        self._closing = True
+        try:
+            for module in self._started - self._finished:
+                self.finish(module, status=unfinished_status)
+            self._progress.stop()
+            self._closed = True
+        finally:
+            self._closing = False
 
     def _task_id(self, module: str) -> int:
         normalized = str(module).strip().lower()
@@ -504,3 +532,17 @@ class TerminalProgress(AbstractContextManager):
         current = self._progress.get_time()
         task.start_time = current - elapsed
         task.stop_time = None
+
+    def _refresh_after_update(self, *, force: bool) -> None:
+        if not self.enabled or self._closed or self._closing or self._auto_refresh:
+            return
+        current = self._refresh_clock()
+        with self._refresh_lock:
+            if (
+                not force
+                and self._last_refresh_at is not None
+                and current - self._last_refresh_at < _PROGRESS_REFRESH_INTERVAL_SECONDS
+            ):
+                return
+            self._progress.refresh()
+            self._last_refresh_at = current

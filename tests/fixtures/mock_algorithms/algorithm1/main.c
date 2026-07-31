@@ -9,8 +9,8 @@
 
 #define OUTPUT_FILENAME "mock_output.txt"
 #define OUTPUT_ROOT "../algorithm1_output"
-#define COUNTER_FILENAME "counter.yaml"
-#define COUNTER_TEMP_FILENAME "counter.yaml.tmp"
+#define COUNTER_FILENAME "log_count.txt"
+#define COUNTER_TEMP_FILENAME "log_count.txt.tmp"
 #define PATH_BUFFER_SIZE 4096
 
 static int parse_number(const char *text, double *value) {
@@ -100,8 +100,8 @@ static int read_last_completed(const char *counter_path, long *value) {
     char line[128];
     char extra = '\0';
     int valid = fgets(line, sizeof(line), counter) != NULL &&
-                sscanf(line, "last_completed: %ld %c", value, &extra) == 1 &&
-                *value >= -1;
+                sscanf(line, "%ld %c", value, &extra) == 1 &&
+                *value >= 0;
     if (valid) {
         int character = 0;
         while ((character = fgetc(counter)) != EOF) {
@@ -140,7 +140,7 @@ static int write_counter(const char *counter_path, long value) {
         perror(temporary_path);
         return 0;
     }
-    int ok = fprintf(counter, "last_completed: %ld\n", value) >= 0;
+    int ok = fprintf(counter, "%ld\n", value) >= 0;
     if (fclose(counter) != 0) {
         ok = 0;
     }

@@ -115,6 +115,11 @@ RK3399 必需文件：
 - `imgts.txt`
 - `calib_raw.yaml`
 
+RK3399 在正式扫描或运行前，会把每个具体数据集目录中的
+`calib_raw.yaml` 复制为同目录下的 `calib.yaml`。如果 `calib.yaml`
+已经存在也会覆盖，确保它始终和原始标定一致；`calib_raw.yaml` 本身不修改。
+`--dry-run` 和 `dataset list` 不执行该复制。
+
 RK3588 必需文件：
 
 - `imu.txt`
@@ -139,7 +144,10 @@ RK3588 的前视和下视时间戳必须完全一致。系统同时校验两份�
 
 数据集管理不会录入或使用数据集中的 `home_point.txt`。VLOC 必须和轨迹一起输出本次运行自己的 `home_point.txt`。
 
-扫描过程不会修改 IMU、图像、时间戳或标定文件。系统只在扫描识别出的每个具体数据集根目录生成一份 `benchmark_dataset.yaml`，其中保存该数据集的输入路径和 Segment；算法适用性由系统根据输入文件和算法契约判断，不写入数据集配置。
+除上述 RK3399 的 `calib.yaml` 兼容副本外，扫描过程不会修改 IMU、图像、
+时间戳或原始标定文件。系统只在扫描识别出的每个具体数据集根目录生成一份
+`benchmark_dataset.yaml`，其中保存该数据集的输入路径和 Segment；算法
+适用性由系统根据输入文件和算法契约判断，不写入数据集配置。
 
 ## 算法编译配置
 
@@ -157,10 +165,15 @@ run:
 ```
 
 `algorithm1` 使用外部编号输出：算法在 `output_root_path` 下维护
-`counter.yaml` 和 `0/`、`1/` 等编号目录。Pipeline 对比运行前后的计数器，
+`log_count.txt` 和 `0/`、`1/` 等编号目录。`log_count.txt` 只保存当前
+编号，例如 `10`，不包含 YAML 字段或其他内容。Pipeline 对比运行前后的计数器，
 只从本次新增的编号目录复制契约规定的输出，并将计数器快照保存到 Segment
-结果中的 `output_counter.yaml`。没有外部编号输出的算法不配置这个路径，
+结果中的 `log_count.txt`。没有外部编号输出的算法不配置这个路径，
 继续从算法工作目录读取固定输出。
+
+已有输出目录需要进行一次迁移：把旧 `counter.yaml` 中的
+`last_completed: N` 转换为只包含 `N` 的 `log_count.txt`，并删除旧文件。
+Pipeline 不再读取 YAML 计数器，也不会根据现有数字目录猜测当前编号。
 
 默认运行命令继续使用算法内置契约规定的位置参数顺序。只有算法要求不同的参数
 前缀或排列时，才增加可选的 `run.command_template`：
@@ -384,12 +397,27 @@ benchmark run \
 
 `--fail-fast` 不等待失败阈值，第一次数据集或算法运行失败就保存当前事实并返回非零退出码。算法 Segment 运行过程中，用户主动按下 `Ctrl+C` 时，两种模式都会终止当前算法进程并停止本次测试；系统保留已经写入的日志、回执和 `checkpoint.yaml`。
 
-恢复操作需要用户手动执行，不会在程序或工作站重启后自动开始。恢复时，算法配置、数据集配置、所选数据集、失败策略、失败阈值、超时时间以及 RPE 间隔必须与原运行一致；Git 状态、构建脚本、构建产物、算法契约以及数据集和 Segment 信息也必须保持不变，否则系统拒绝恢复。
+### 恢复暂停或中断的测试
 
-默认模式使用下面的命令恢复：
+如果运行过程中数据集根目录或必需输入突然消失（例如外接数据盘掉线），系统不会把它记为算法失败，也不会继续把后续数据集批量记为失败。当前测试会显示 `PAUSED`，保存当前日志、回执和 `checkpoint.yaml`，并将当前数据集及后续数据集保留为未运行。
+
+恢复需要手动执行，具体步骤如下：
+
+1. 从原命令最后输出的 `result:` 找到本次测试目录，例如
+   `result/orbslam3_mono_sf/test-016`。
+2. 如果是数据盘掉线，先重新挂载数据盘，并确认数据集仍位于原来的绝对路径。
+3. 确认测试目录内存在 `checkpoint.yaml`。
+4. 使用与原运行完全相同的参数重新执行 `benchmark run`，并在末尾增加
+   `--resume TEST_DIR`。
+
+默认模式的完整示例：
 
 ```bash
-RESULT="/path/to/result/ALGORITHM_ID/TEST_ID"
+cd /path/to/benchmark
+
+RESULT="$PWD/result/ALGORITHM_ID/TEST_ID"
+
+test -f "$RESULT/checkpoint.yaml"
 
 benchmark run \
   --algorithm-config /path/to/algorithm.yaml \
@@ -397,21 +425,40 @@ benchmark run \
   --resume "$RESULT"
 ```
 
-如果原运行使用了 `--fail-fast`，恢复时也必须保留：
+例如需要恢复 `orbslam3_mono_sf/test-016`：
+
+```bash
+RESULT="$PWD/result/orbslam3_mono_sf/test-016"
+
+benchmark run \
+  --algorithm-config configs/orbslam3_mono_sf.local.yaml \
+  --dataset-config configs/dataset_01_normal_rk3399.local.yaml \
+  --failure-threshold 1 \
+  --timeout-seconds 1800 \
+  --rpe-delta 100 \
+  --rpe-unit m \
+  --resume "$RESULT"
+```
+
+如果原运行使用了 `--fail-fast`，恢复时也必须保留该选项：
 
 ```bash
 benchmark run \
-  --algorithm-config /path/to/algorithm.yaml \
-  --dataset-config /path/to/dataset.yaml \
+  --algorithm-config configs/orbslam3_mono_sf.local.yaml \
+  --dataset-config configs/dataset_01_normal_rk3399.local.yaml \
   --fail-fast \
   --resume "$RESULT"
 ```
 
-如果原运行还指定了 `--failure-threshold`、`--timeout-seconds`、
-`--rpe-delta` 或 `--rpe-unit`，恢复命令也必须传入相同的值。恢复继续使用
-原来的 `TEST_ID`，不会创建新的测试目录；系统保留之前已经完成的数据集，
-删除当前未完成数据集的数字 Segment 目录，并从该数据集的第一个有效
-Segment 重新运行。
+恢复命令必须继续提供原运行使用的全部 `--dataset-config` 和
+`--dataset-path`，并保持 `--fail-fast`、`--failure-threshold`、
+`--timeout-seconds`、`--rpe-delta`、`--rpe-unit` 等参数不变。算法配置、
+数据集配置、Git 状态、构建脚本、构建产物、算法契约以及数据集和 Segment
+信息也必须保持不变，否则系统会拒绝恢复。
+
+恢复会继续使用原来的 `TEST_ID`，不会创建新的测试目录。系统保留之前已经
+完成的数据集，清理当前未完成数据集的数字 Segment 目录，并从当前数据集
+的第一个有效 Segment 重新运行。
 
 普通新运行会在当前算法结果目录下自动分配下一个 `test_id`。完整 commit 保存在回执和冻结配置中，不作为目录层级。编译产物保留在算法仓库中，默认结果结构为：
 

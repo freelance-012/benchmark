@@ -14,11 +14,13 @@ from contextlib import redirect_stderr, redirect_stdout
 from dataclasses import replace
 from pathlib import Path
 from typing import Callable, Optional, Tuple
+from unittest import mock
 
 import yaml
 import openpyxl
 from openpyxl import load_workbook
 
+import slam_benchmark.execution.service as execution_service_module
 from slam_benchmark.cli import main
 from slam_benchmark.compilation.models import BuildConfig
 from slam_benchmark.datasets.models import DatasetScanConfig
@@ -125,16 +127,16 @@ class ExecutionModuleTests(unittest.TestCase):
         self.assertFalse((result_dir / "home_point.txt").exists())
         output_root = algorithm_root.parent / "algorithm1_output"
         self.assertEqual(
-            self._yaml(output_root / "counter.yaml"),
-            {"last_completed": 0},
+            (output_root / "log_count.txt").read_text(encoding="utf-8"),
+            "0\n",
         )
         self.assertEqual(
             (output_root / "0" / "mock_output.txt").read_bytes(),
             (result_dir / "mock_output.txt").read_bytes(),
         )
         self.assertEqual(
-            self._yaml(result_dir / "output_counter.yaml"),
-            {"last_completed": 0},
+            (result_dir / "log_count.txt").read_text(encoding="utf-8"),
+            "0\n",
         )
         receipt = self._yaml(result_dir / "receipt.yaml")
         self.assertEqual(
@@ -178,20 +180,20 @@ class ExecutionModuleTests(unittest.TestCase):
         self.assertEqual(summary.successful_segments, 2)
         output_root = algorithm_root.parent / "algorithm1_output"
         self.assertEqual(
-            self._yaml(output_root / "counter.yaml"),
-            {"last_completed": 1},
+            (output_root / "log_count.txt").read_text(encoding="utf-8"),
+            "1\n",
         )
         self.assertTrue((output_root / "0" / "mock_output.txt").is_file())
         self.assertTrue((output_root / "1" / "mock_output.txt").is_file())
         first_result = summary.result_root / "dataset" / "0"
         second_result = summary.result_root / "dataset" / "1"
         self.assertEqual(
-            self._yaml(first_result / "output_counter.yaml"),
-            {"last_completed": 0},
+            (first_result / "log_count.txt").read_text(encoding="utf-8"),
+            "0\n",
         )
         self.assertEqual(
-            self._yaml(second_result / "output_counter.yaml"),
-            {"last_completed": 1},
+            (second_result / "log_count.txt").read_text(encoding="utf-8"),
+            "1\n",
         )
         self.assertNotEqual(
             (first_result / "mock_output.txt").read_bytes(),
@@ -227,16 +229,17 @@ class ExecutionModuleTests(unittest.TestCase):
     def test_numbered_output_counter_must_advance_exactly_once(self) -> None:
         output_root = self.root / "external numbered output"
         output_root.mkdir()
-        (output_root / "counter.yaml").write_text(
-            "last_completed: -1\n",
+        (output_root / "log_count.txt").write_text(
+            "0\n",
             encoding="utf-8",
         )
         before = read_numbered_output_snapshot(
             output_root,
-            Path("counter.yaml"),
+            Path("log_count.txt"),
             allow_uninitialized=True,
         )
-        numbered_directory = output_root / "0"
+        (output_root / "0").mkdir()
+        numbered_directory = output_root / "1"
         numbered_directory.mkdir()
         (numbered_directory / "mock_output.txt").write_text(
             "output without a counter update\n",
@@ -249,8 +252,26 @@ class ExecutionModuleTests(unittest.TestCase):
         ):
             resolve_numbered_output_sources(
                 before,
-                Path("counter.yaml"),
+                Path("log_count.txt"),
                 (Path("mock_output.txt"),),
+            )
+
+    def test_numbered_output_counter_rejects_yaml_content(self) -> None:
+        output_root = self.root / "YAML counter is no longer supported"
+        output_root.mkdir()
+        (output_root / "log_count.txt").write_text(
+            "last_completed: 0\n",
+            encoding="utf-8",
+        )
+
+        with self.assertRaisesRegex(
+            RunnerError,
+            "must contain only one integer",
+        ):
+            read_numbered_output_snapshot(
+                output_root,
+                Path("log_count.txt"),
+                allow_uninitialized=False,
             )
 
     def test_nonempty_numbered_output_requires_counter(self) -> None:
@@ -263,7 +284,7 @@ class ExecutionModuleTests(unittest.TestCase):
         ):
             read_numbered_output_snapshot(
                 output_root,
-                Path("counter.yaml"),
+                Path("log_count.txt"),
                 allow_uninitialized=True,
             )
 
@@ -418,6 +439,123 @@ class ExecutionModuleTests(unittest.TestCase):
         self.assertEqual(progress.status(MODULE_TOTAL), "warning")
         self.assertIn((MODULE_EVALUATE, "waiting"), progress.transitions)
         self.assertIn((MODULE_REPORT, "waiting"), progress.transitions)
+
+    def test_dataset_disappearing_before_segment_pauses_and_resumes(self) -> None:
+        algorithm_root = self._copy_git_algorithm("algorithm2")
+        collection = self.root / "dataset disappears before run"
+        self._create_sf_dataset(collection, "01-first", "rk3399")
+        second = self._create_sf_dataset(collection, "02-second", "rk3399")
+        request = self._request(
+            "algorithm2",
+            algorithm_root,
+            collection,
+            "rk3399",
+        )
+        service = ExecutionService()
+        offline = self.root / "temporarily offline second dataset"
+        original = execution_service_module.build_run_command
+
+        def disappear_before_command(*args, **kwargs):
+            instance = args[2]
+            if instance.root_path == second and second.exists():
+                second.rename(offline)
+            return original(*args, **kwargs)
+
+        with mock.patch.object(
+            execution_service_module,
+            "build_run_command",
+            side_effect=disappear_before_command,
+        ):
+            paused = service.start(request)
+
+        self.assertEqual(paused.status, "paused")
+        self.assertEqual(paused.successful_datasets, 1)
+        self.assertEqual(paused.failed_datasets, 0)
+        self.assertEqual(paused.not_run_datasets, 1)
+        self.assertEqual(paused.successful_segments, 1)
+        self.assertEqual(paused.failed_segments, 0)
+        self.assertEqual(paused.not_run_segments, 1)
+        self.assertEqual(paused.algorithm_failure_count, 0)
+        self.assertIn(
+            "dataset root is not a directory",
+            paused.failure_reason or "",
+        )
+        checkpoint = self._yaml(paused.result_root / "checkpoint.yaml")
+        self.assertEqual(checkpoint["status"], "paused")
+        self.assertEqual(checkpoint["next_dataset_index"], 1)
+        self.assertEqual(checkpoint["next_segment_index"], 1)
+        self.assertEqual(len(checkpoint["dataset_results"]), 1)
+        self.assertEqual(
+            len(list(paused.result_root.glob("dataset/*/receipt.yaml"))),
+            1,
+        )
+
+        offline.rename(second)
+        resumed = service.resume(request, paused.result_root)
+
+        self.assertEqual(resumed.status, "success")
+        self.assertEqual(resumed.successful_datasets, 2)
+        self.assertEqual(resumed.failed_datasets, 0)
+        self.assertEqual(resumed.not_run_datasets, 0)
+        self.assertEqual(resumed.successful_segments, 2)
+        self.assertEqual(resumed.not_run_segments, 0)
+
+    def test_dataset_disappearing_during_segment_saves_paused_receipt(self) -> None:
+        algorithm_root = self._copy_git_algorithm("algorithm2")
+        collection, dataset = self._create_collection(
+            "rk3399",
+            "dataset disappears during run",
+        )
+        request = self._request(
+            "algorithm2",
+            algorithm_root,
+            collection,
+            "rk3399",
+        )
+        service = ExecutionService()
+        offline = self.root / "temporarily offline active dataset"
+        original = execution_service_module.run_process
+
+        def disappear_after_process(*args, **kwargs):
+            result = original(*args, **kwargs)
+            dataset.rename(offline)
+            return result
+
+        with mock.patch.object(
+            execution_service_module,
+            "run_process",
+            side_effect=disappear_after_process,
+        ):
+            paused = service.start(request)
+
+        self.assertEqual(paused.status, "paused")
+        self.assertEqual(paused.successful_datasets, 0)
+        self.assertEqual(paused.failed_datasets, 0)
+        self.assertEqual(paused.not_run_datasets, 1)
+        self.assertEqual(paused.successful_segments, 0)
+        self.assertEqual(paused.failed_segments, 0)
+        self.assertEqual(paused.not_run_segments, 1)
+        self.assertEqual(paused.algorithm_failure_count, 0)
+        receipt_path = paused.result_root / "dataset" / "0" / "receipt.yaml"
+        receipt = self._yaml(receipt_path)
+        self.assertEqual(receipt["status"], "paused")
+        self.assertFalse(receipt["algorithm_failure"])
+        self.assertIn(
+            "dataset root is not a directory",
+            receipt["failure_reason"],
+        )
+        self.assertTrue((receipt_path.parent / "stdout.log").is_file())
+        self.assertTrue((receipt_path.parent / "stderr.log").is_file())
+
+        offline.rename(dataset)
+        resumed = service.resume(request, paused.result_root)
+
+        self.assertEqual(resumed.status, "success")
+        self.assertEqual(resumed.successful_datasets, 1)
+        self.assertEqual(resumed.successful_segments, 1)
+        self.assertEqual(resumed.algorithm_failure_count, 0)
+        resumed_receipt = self._yaml(receipt_path)
+        self.assertEqual(resumed_receipt["status"], "success")
 
     def test_multiple_successful_segments_have_isolated_results(self) -> None:
         algorithm_root = self._copy_git_algorithm("algorithm2")

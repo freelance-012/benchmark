@@ -21,7 +21,7 @@
 - `algorithm3` 接收 KITTI 的时间戳、标定、左右图像目录，以及可选真值路径。
 
 三个程序都将相同格式的键值记录打印到标准输出。`algorithm1` 在算法目录旁的
-`algorithm1_output/` 中维护 `counter.yaml`，每次把输出写入新的数字目录；
+`algorithm1_output/` 中维护只含当前编号的 `log_count.txt`，每次把输出写入新的数字目录；
 `algorithm2` 和 `algorithm3` 仍覆盖写入算法工作目录下的 `mock_output.txt`。
 测试会比较标准输出、固定输出和预期参数，差异即表示 Pipeline 的输入映射、
 工作目录或外部输出定位存在问题。`algorithm2` 还会同时生成

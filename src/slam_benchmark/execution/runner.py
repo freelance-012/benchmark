@@ -13,8 +13,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional, Sequence, Tuple
 
-import yaml
-
 from ..algorithms.contracts import AlgorithmContract
 from ..datasets.models import DatasetInstance, Segment
 from ..debug import (
@@ -119,24 +117,26 @@ def read_numbered_output_snapshot(
         raise RunnerError(f"numbered output counter is not a file: {counter}")
 
     try:
-        payload: Any = yaml.safe_load(counter.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, yaml.YAMLError) as exc:
+        content = counter.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
         raise RunnerError(
             f"cannot read numbered output counter {counter}: {exc}"
         ) from exc
-    if not isinstance(payload, dict):
+    number_text = content[:-1] if content.endswith("\n") else content
+    if not number_text or number_text.strip() != number_text or "\n" in number_text:
         raise RunnerError(
-            f"numbered output counter must contain a YAML mapping: {counter}"
+            f"numbered output counter must contain only one integer: {counter}"
         )
-    last_completed = payload.get("last_completed")
-    if (
-        isinstance(last_completed, bool)
-        or not isinstance(last_completed, int)
-        or last_completed < -1
-    ):
+    try:
+        last_completed = int(number_text, 10)
+    except ValueError as exc:
         raise RunnerError(
-            "numbered output counter last_completed must be an integer "
-            f"greater than or equal to -1: {counter}"
+            f"numbered output counter must contain only one integer: {counter}"
+        ) from exc
+    if last_completed < 0 or number_text != str(last_completed):
+        raise RunnerError(
+            "numbered output counter must contain one non-negative canonical "
+            f"integer: {counter}"
         )
     return NumberedOutputSnapshot(root, counter, last_completed)
 

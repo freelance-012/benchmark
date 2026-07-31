@@ -42,6 +42,10 @@ class DatasetManagerTests(unittest.TestCase):
         instance_path = dataset / INSTANCE_FILENAME
         self.assertTrue(instance_path.is_file())
         self.assertFalse((self.root / INSTANCE_FILENAME).exists())
+        self.assertEqual(
+            (dataset / "calib.yaml").read_bytes(),
+            (dataset / "calib_raw.yaml").read_bytes(),
+        )
 
         payload = yaml.safe_load(instance_path.read_text(encoding="utf-8"))
         self.assertEqual(payload["dataset"]["root_path"], str(dataset.resolve()))
@@ -53,6 +57,46 @@ class DatasetManagerTests(unittest.TestCase):
                 if value is not None
             )
         )
+
+    def test_scan_overwrites_calib_yaml_when_reusing_existing_instance(self) -> None:
+        dataset = self.root / "flight-calibration-copy"
+        timestamps = [float(index) for index in range(202)]
+        _write_dataset(
+            dataset,
+            "rk3399",
+            timestamps,
+            [0] + [3] * 200 + [0],
+            timestamps,
+        )
+        manager = self._manager("rk3399")
+        first = manager.scan()
+        self.assertFalse(first.has_errors)
+        (dataset / "calib.yaml").write_text("stale\n", encoding="utf-8")
+
+        second = manager.scan()
+
+        self.assertFalse(second.has_errors)
+        self.assertEqual(
+            (dataset / "calib.yaml").read_bytes(),
+            (dataset / "calib_raw.yaml").read_bytes(),
+        )
+
+    def test_dry_run_does_not_create_calib_yaml(self) -> None:
+        dataset = self.root / "flight-calibration-dry-run"
+        timestamps = [float(index) for index in range(202)]
+        _write_dataset(
+            dataset,
+            "rk3399",
+            timestamps,
+            [0] + [3] * 200 + [0],
+            timestamps,
+        )
+
+        report = self._manager("rk3399").scan(refresh=True, persist=False)
+
+        self.assertFalse(report.has_errors)
+        self.assertFalse((dataset / "calib.yaml").exists())
+        self.assertFalse((dataset / INSTANCE_FILENAME).exists())
 
     def test_each_discovered_dataset_gets_its_own_instance(self) -> None:
         timestamps = [float(index) for index in range(202)]
@@ -199,6 +243,7 @@ class DatasetManagerTests(unittest.TestCase):
         )
         self.assertFalse((dataset / "img.avi").exists())
         self.assertFalse((dataset / "imgts.txt").exists())
+        self.assertFalse((dataset / "calib.yaml").exists())
 
     def test_rk3588_missing_h265_stream_is_rejected(self) -> None:
         dataset = self.root / "flight-rk3588-missing-stream"
