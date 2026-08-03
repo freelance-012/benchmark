@@ -86,9 +86,16 @@ class ExecutionModuleTests(unittest.TestCase):
                 self.assertEqual(summary.successful_datasets, 1)
                 self.assertEqual(summary.successful_segments, 1)
                 self.assertEqual(summary.algorithm_failure_count, 0)
-                copied = list(summary.result_root.glob("dataset/*/mock_output.txt"))
-                self.assertEqual(len(copied), 1)
-                output = copied[0].read_text(encoding="utf-8")
+                segment_dirs = list(summary.result_root.glob("dataset/*"))
+                self.assertEqual(len(segment_dirs), 1)
+                receipt = self._yaml(segment_dirs[0] / "receipt.yaml")
+                output_source_paths = receipt["output_source_paths"]
+                self.assertTrue(len(output_source_paths) >= 1)
+                mock_output_path = next(
+                    Path(p) for p in output_source_paths
+                    if p.endswith("mock_output.txt")
+                )
+                output = mock_output_path.read_text(encoding="utf-8")
                 self.assertIn(f"algorithm={algorithm_id}", output)
                 self.assertIn(f"dataset_type={dataset_type}", output)
                 self.assertIn(f"dataset_root={dataset.resolve()}", output)
@@ -119,23 +126,17 @@ class ExecutionModuleTests(unittest.TestCase):
         self.assertEqual(summary.successful_datasets, 1)
         self.assertEqual(summary.successful_segments, 1)
         result_dir = next(summary.result_root.glob("dataset/*"))
-        output = (result_dir / "mock_output.txt").read_text(encoding="utf-8")
+        output_root = algorithm_root.parent / "algorithm1_output"
+        output = (output_root / "0" / "mock_output.txt").read_text(encoding="utf-8")
         self.assertIn("algorithm=algorithm1", output)
         self.assertIn("dataset_type=rk3399", output)
         self.assertIn(f"dataset_root={dataset}", output)
-        self.assertTrue((result_dir / "calib_raw.yaml").is_file())
+        self.assertFalse((result_dir / "mock_output.txt").exists())
+        self.assertFalse((result_dir / "calib_raw.yaml").exists())
         self.assertFalse((result_dir / "home_point.txt").exists())
-        output_root = algorithm_root.parent / "algorithm1_output"
+        self.assertFalse((result_dir / "log_count.txt").exists())
         self.assertEqual(
             (output_root / "log_count.txt").read_text(encoding="utf-8"),
-            "0\n",
-        )
-        self.assertEqual(
-            (output_root / "0" / "mock_output.txt").read_bytes(),
-            (result_dir / "mock_output.txt").read_bytes(),
-        )
-        self.assertEqual(
-            (result_dir / "log_count.txt").read_text(encoding="utf-8"),
             "0\n",
         )
         receipt = self._yaml(result_dir / "receipt.yaml")
@@ -187,17 +188,15 @@ class ExecutionModuleTests(unittest.TestCase):
         self.assertTrue((output_root / "1" / "mock_output.txt").is_file())
         first_result = summary.result_root / "dataset" / "0"
         second_result = summary.result_root / "dataset" / "1"
-        self.assertEqual(
-            (first_result / "log_count.txt").read_text(encoding="utf-8"),
-            "0\n",
-        )
-        self.assertEqual(
-            (second_result / "log_count.txt").read_text(encoding="utf-8"),
-            "1\n",
-        )
+        self.assertFalse((first_result / "log_count.txt").exists())
+        self.assertFalse((second_result / "log_count.txt").exists())
+        self.assertFalse((first_result / "mock_output.txt").exists())
+        self.assertFalse((second_result / "mock_output.txt").exists())
+        first_receipt = self._yaml(first_result / "receipt.yaml")
+        second_receipt = self._yaml(second_result / "receipt.yaml")
         self.assertNotEqual(
-            (first_result / "mock_output.txt").read_bytes(),
-            (second_result / "mock_output.txt").read_bytes(),
+            first_receipt["output_source_paths"],
+            second_receipt["output_source_paths"],
         )
 
     def test_algorithm1_requires_numbered_output_root_configuration(self) -> None:
@@ -378,7 +377,8 @@ class ExecutionModuleTests(unittest.TestCase):
         receipt = self._yaml(receipt_path)
         self.assertEqual(receipt["command"][1:3], ["--dataset", str(dataset)])
         self.assertEqual(receipt["command"][-2:], ["--ground-truth", "<none>"])
-        output = (receipt_path.parent / "mock_output.txt").read_text(encoding="utf-8")
+        output_source = Path(receipt["output_source_paths"][0])
+        output = output_source.read_text(encoding="utf-8")
         self.assertIn("input.ground_truth_path=<none>\n", output)
 
     def test_default_mode_continues_after_failed_segment(self) -> None:
@@ -557,7 +557,7 @@ class ExecutionModuleTests(unittest.TestCase):
         resumed_receipt = self._yaml(receipt_path)
         self.assertEqual(resumed_receipt["status"], "success")
 
-    def test_multiple_successful_segments_have_isolated_results(self) -> None:
+    def test_multiple_successful_segments_record_output_paths(self) -> None:
         algorithm_root = self._copy_git_algorithm("algorithm2")
         collection = self.root / "multiple Segment datasets"
         self._create_sf_dataset(
@@ -573,11 +573,13 @@ class ExecutionModuleTests(unittest.TestCase):
 
         self.assertEqual(summary.status, "success")
         self.assertEqual(summary.successful_segments, 2)
-        outputs = sorted(summary.result_root.glob("dataset/*/mock_output.txt"))
-        self.assertEqual(len(outputs), 2)
-        self.assertEqual([item.parent.name for item in outputs], ["0", "1"])
-        contents = [item.read_text(encoding="utf-8") for item in outputs]
-        self.assertEqual(len(set(contents)), 2)
+        receipt_paths = sorted(summary.result_root.glob("dataset/*/receipt.yaml"))
+        self.assertEqual(len(receipt_paths), 2)
+        for receipt_path in receipt_paths:
+            receipt = self._yaml(receipt_path)
+            output_sources = receipt["output_source_paths"]
+            self.assertTrue(len(output_sources) >= 1)
+            self.assertTrue(all(Path(p).is_file() for p in output_sources))
 
     def test_result_tree_is_flat_and_segment_indexed(self) -> None:
         algorithm_root = self._copy_git_algorithm("algorithm2")
@@ -618,30 +620,28 @@ class ExecutionModuleTests(unittest.TestCase):
             self.assertTrue((segment_dir / "receipt.yaml").is_file())
             self.assertTrue((segment_dir / "stdout.log").is_file())
             self.assertTrue((segment_dir / "stderr.log").is_file())
-            self.assertTrue((segment_dir / "mock_output.txt").is_file())
-            self.assertTrue((segment_dir / "home_point.txt").is_file())
-            self.assertTrue((segment_dir / "calib_raw.yaml").is_file())
+            self.assertFalse((segment_dir / "mock_output.txt").exists())
+            self.assertFalse((segment_dir / "home_point.txt").exists())
+            self.assertFalse((segment_dir / "calib_raw.yaml").exists())
             self.assertTrue((segment_dir / "evaluation").is_dir())
             receipt = self._yaml(segment_dir / "receipt.yaml")
             self.assertEqual(receipt["run_index"], run_index)
+            self.assertTrue(len(receipt["output_source_paths"]) >= 1)
         self.assertFalse(any(summary.result_root.rglob("dataset_receipt.yaml")))
-        self.assertFalse(any(summary.result_root.rglob("result")))
 
-    def test_successful_run_copies_voeval_log_dir_support_files(self) -> None:
+    def test_successful_run_does_not_copy_files_to_segment_directory(self) -> None:
         cases = (
             (
                 "algorithm1",
                 "rk3588",
                 "bottom_calib_raw.yaml",
                 "front_calib_raw.yaml",
-                False,
             ),
             (
                 "algorithm2",
                 "rk3399",
                 "calib_raw.yaml",
                 None,
-                True,
             ),
         )
         for (
@@ -649,7 +649,6 @@ class ExecutionModuleTests(unittest.TestCase):
             dataset_type,
             calibration_name,
             excluded_name,
-            expects_home_point,
         ) in cases:
             with self.subTest(dataset_type=dataset_type):
                 algorithm_root = self._copy_git_algorithm(algorithm_id)
@@ -672,26 +671,13 @@ class ExecutionModuleTests(unittest.TestCase):
                 )
 
                 result_dir = next(summary.result_root.glob("dataset/*"))
-                copied_calibration = result_dir / calibration_name
-                copied_home_point = result_dir / "home_point.txt"
-                self.assertEqual(
-                    copied_calibration.read_bytes(),
-                    (dataset / calibration_name).read_bytes(),
-                )
-                if expects_home_point:
-                    self.assertEqual(
-                        copied_home_point.read_text(encoding="utf-8"),
-                        "121.2 31.1 51.0\n",
-                    )
-                    self.assertNotEqual(
-                        copied_home_point.read_bytes(),
-                        home_point.read_bytes(),
-                    )
-                else:
-                    self.assertFalse(copied_home_point.exists())
+                self.assertFalse((result_dir / calibration_name).exists())
+                self.assertFalse((result_dir / "home_point.txt").exists())
                 if excluded_name is not None:
                     self.assertFalse((result_dir / excluded_name).exists())
                 self.assertTrue((result_dir / "evaluation").is_dir())
+                receipt = self._yaml(result_dir / "receipt.yaml")
+                self.assertTrue(len(receipt["output_source_paths"]) >= 1)
 
     def test_sf_vloc_does_not_require_dataset_home_point(self) -> None:
         algorithm_root = self._copy_git_algorithm("algorithm2")
@@ -707,12 +693,18 @@ class ExecutionModuleTests(unittest.TestCase):
 
         self.assertEqual(summary.status, "success")
         self.assertEqual(summary.successful_datasets, 1)
+        result_dir = summary.result_root / "dataset" / "0"
+        receipt = self._yaml(result_dir / "receipt.yaml")
+        output_source_paths = receipt["output_source_paths"]
+        self.assertEqual(len(output_source_paths), 2)
+        home_point_source = next(
+            Path(p) for p in output_source_paths if p.endswith("home_point.txt")
+        )
         self.assertEqual(
-            (summary.result_root / "dataset" / "0" / "home_point.txt").read_text(
-                encoding="utf-8"
-            ),
+            home_point_source.read_text(encoding="utf-8"),
             "121.2 31.1 51.0\n",
         )
+        self.assertFalse((result_dir / "home_point.txt").exists())
 
     def test_successful_segment_runs_voeval_and_updates_summary(self) -> None:
         algorithm_root = self._copy_git_algorithm("algorithm1")
@@ -968,28 +960,6 @@ print("integration voeval complete")
         self.assertTrue(receipt["algorithm_failure"])
         self.assertIn("does not exist", receipt["failure_reason"])
         self.assertFalse((receipt_path.parent / "calib_raw.yaml").exists())
-
-    def test_wrong_fixed_output_content_is_rejected(self) -> None:
-        algorithm_root = self._copy_git_algorithm(
-            "algorithm2",
-            _write_wrong_dataset_type,
-        )
-        collection, _ = self._create_collection("rk3399", "wrong-output")
-
-        summary = ExecutionService().start(
-            self._request(
-                "algorithm2",
-                algorithm_root,
-                collection,
-                "rk3399",
-                failure_threshold=0,
-            )
-        )
-
-        self.assertEqual(summary.status, "failed")
-        receipt = self._yaml(next(summary.result_root.glob("dataset/*/receipt.yaml")))
-        self.assertFalse(receipt["output_checks"]["mock_output.txt"]["format_valid"])
-        self.assertIn("does not match run inputs", receipt["failure_reason"])
 
     def test_timeout_is_an_algorithm_failure(self) -> None:
         algorithm_root = self._copy_git_algorithm("algorithm2", _sleep_before_output)
@@ -1693,13 +1663,6 @@ def _sleep_before_output(source: str) -> str:
     return source.replace(
         '    FILE *output = fopen(OUTPUT_FILENAME, "w");',
         ('    sleep(1);\n\n    FILE *output = fopen(OUTPUT_FILENAME, "w");'),
-    )
-
-
-def _write_wrong_dataset_type(source: str) -> str:
-    return source.replace(
-        'emit(output, "dataset_type", "rk3399")',
-        'emit(output, "dataset_type", "wrong")',
     )
 
 

@@ -10,7 +10,7 @@ from ..compilation.models import BuildConfig
 from ..datasets.models import DatasetScanConfig
 from ..evaluation.models import DEFAULT_RPE_DELTA_UNIT, DEFAULT_RPE_DELTA_VALUE
 
-RUN_RECEIPT_SCHEMA_VERSION = 2
+RUN_RECEIPT_SCHEMA_VERSION = 3
 RUN_CHECKPOINT_SCHEMA_VERSION = 2
 RUN_CONFIG_SCHEMA_VERSION = 2
 
@@ -96,7 +96,6 @@ class SegmentRunReceipt:
     stdout_path: Path
     stderr_path: Path
     output_source_paths: Tuple[Path, ...]
-    output_result_paths: Tuple[Path, ...]
     output_checks: Dict[str, Any]
     algorithm_failure: bool
     failure_reason: Optional[str]
@@ -124,7 +123,6 @@ class SegmentRunReceipt:
             "stdout_path": str(self.stdout_path),
             "stderr_path": str(self.stderr_path),
             "output_source_paths": [str(item) for item in self.output_source_paths],
-            "output_result_paths": [str(item) for item in self.output_result_paths],
             "output_checks": dict(self.output_checks),
             "algorithm_failure": self.algorithm_failure,
             "failure_reason": self.failure_reason,

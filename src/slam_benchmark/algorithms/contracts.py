@@ -225,7 +225,7 @@ _CONTRACTS = {
         entrypoint_relative_path=Path("bin/sfvision"),
         numbered_output_counter_relative_path=Path("log_count.txt"),
         fixed_output_relative_path=Path("vo.txt"),
-        output_validator="vo",
+        output_validator="sf_vo",
         evaluation_workflow=EVALUATION_WORKFLOW_SF_VLOC,
         dataset_run_contracts=(
             DatasetRunContract(

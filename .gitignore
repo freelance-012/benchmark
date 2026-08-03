@@ -12,3 +12,5 @@ dist/
 /result/
 /results/
 /configs/*.local.yaml
+
+CLAUDE.md

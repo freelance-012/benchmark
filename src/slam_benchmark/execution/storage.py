@@ -207,55 +207,6 @@ class RunStore:
         self.save_mapping(paths.receipt_path, receipt.to_dict())
         return paths.receipt_path
 
-    def copy_fixed_output(
-        self,
-        source: Path,
-        result_dir: Path,
-        relative_path: Path,
-    ) -> Path:
-        return self.copy_result_file(source, result_dir, relative_path)
-
-    def copy_result_file(
-        self,
-        source: Path,
-        result_dir: Path,
-        relative_path: Path,
-    ) -> Path:
-        if relative_path.is_absolute():
-            raise RunStorageError(f"result file path must be relative: {relative_path}")
-        destination = (result_dir / relative_path).resolve()
-        if not _is_within(destination, result_dir.resolve()):
-            raise RunStorageError(
-                f"result file path escapes result directory: {destination}"
-            )
-        if destination.exists():
-            raise RunStorageError(f"result file already exists: {destination}")
-
-        temporary: Optional[Path] = None
-        try:
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            with source.open("rb") as source_handle:
-                with tempfile.NamedTemporaryFile(
-                    mode="wb",
-                    dir=destination.parent,
-                    prefix=f".{destination.name}.",
-                    suffix=".tmp",
-                    delete=False,
-                ) as output_handle:
-                    temporary = Path(output_handle.name)
-                    shutil.copyfileobj(source_handle, output_handle)
-                    output_handle.flush()
-                    os.fsync(output_handle.fileno())
-            os.replace(temporary, destination)
-        except OSError as exc:
-            raise RunStorageError(
-                f"cannot copy result file to {destination}: {exc}"
-            ) from exc
-        finally:
-            if temporary is not None and temporary.exists():
-                temporary.unlink(missing_ok=True)
-        return destination
-
     def reset_segment_directories(
         self,
         test_root: Path,

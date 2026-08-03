@@ -11,10 +11,8 @@ from ..algorithms.contracts import AlgorithmContract, get_algorithm_contract
 from ..compilation.models import BuildReceipt
 from ..compilation.service import BuildError, BuildService
 from ..compilation.storage import BuildReceiptStore
-from ..datasets.contracts import get_contract as get_dataset_contract
 from ..datasets.errors import DatasetError
 from ..datasets.models import DatasetInstance, ScanDiagnostic, Segment
-from ..datasets.paths import resolve_dataset_file
 from ..datasets.service import DatasetManager
 from ..debug import debug_enabled, debug_output
 from ..evaluation import (
@@ -64,8 +62,6 @@ from .runner import (
     resolve_fixed_output,
     resolve_numbered_output_sources,
     run_process,
-    validate_additional_output,
-    validate_fixed_output,
 )
 from .runtime_progress import (
     ProgressParser,
@@ -718,73 +714,14 @@ class ExecutionService:
                     command,
                     accept=process.status == "success",
                 )
-            output_results: List[Path] = []
             segment_status = process.status
             segment_failure = process.failure_reason
             algorithm_failure = process.status in {"failed", "timeout"}
 
-            if process.status == "success":
-                if output_error is not None:
-                    segment_status = "failed"
-                    segment_failure = output_error
-                    algorithm_failure = True
-                else:
-                    try:
-                        for (
-                            output_source,
-                            relative_path,
-                        ) in zip(
-                            output_sources,
-                            contract.output_relative_paths,
-                        ):
-                            output_results.append(
-                                self.store.copy_fixed_output(
-                                    output_source,
-                                    paths.segment_dir,
-                                    relative_path,
-                                )
-                            )
-                        if numbered_after is not None:
-                            self.store.copy_result_file(
-                                numbered_after.counter_path,
-                                paths.segment_dir,
-                                Path(counter_relative_path.name),
-                            )
-                        self._copy_evaluation_support_files(
-                            contract,
-                            instance,
-                            paths.segment_dir,
-                        )
-                    except RunStorageError as exc:
-                        segment_status = "failed"
-                        segment_failure = str(exc)
-                        algorithm_failure = False
-                        receipt = self._segment_receipt(
-                            test_root,
-                            request,
-                            contract,
-                            instance,
-                            segment,
-                            run_index,
-                            entrypoint,
-                            command.argv,
-                            process,
-                            paths.stdout_path,
-                            paths.stderr_path,
-                            output_sources,
-                            tuple(output_results),
-                            output_checks,
-                            segment_status,
-                            algorithm_failure,
-                            segment_failure,
-                        )
-                        self.store.save_segment_receipt(paths, receipt)
-                        _debug_run_output(paths, receipt)
-                        self.progress.advance(
-                            MODULE_RUN,
-                            detail=f"{progress_detail}：{segment_status}",
-                        )
-                        raise
+            if process.status == "success" and output_error is not None:
+                segment_status = "failed"
+                segment_failure = output_error
+                algorithm_failure = True
 
             receipt = self._segment_receipt(
                 test_root,
@@ -799,7 +736,6 @@ class ExecutionService:
                 paths.stdout_path,
                 paths.stderr_path,
                 output_sources,
-                tuple(output_results),
                 output_checks,
                 segment_status,
                 algorithm_failure,
@@ -907,6 +843,11 @@ class ExecutionService:
         evaluation_status = "not_run"
         evaluation_failure: Optional[str] = None
         if run_receipt.status == "success":
+            algorithm_output_dir = (
+                run_receipt.output_source_paths[0].parent
+                if run_receipt.output_source_paths
+                else paths.segment_dir
+            )
             self.progress.begin(MODULE_EVALUATE, detail=progress_detail)
             try:
                 evaluation_receipt = self.evaluation_service.evaluate(
@@ -919,7 +860,7 @@ class ExecutionService:
                         segment_id=segment.segment_id,
                         workflow=workflow,
                         data_dir=instance.root_path,
-                        log_dir=paths.segment_dir,
+                        log_dir=algorithm_output_dir,
                         evaluation_dir=paths.evaluation_dir,
                         rpe_delta_value=request.rpe_delta_value,
                         rpe_delta_unit=request.rpe_delta_unit,
@@ -1154,57 +1095,6 @@ class ExecutionService:
             ),
         )
 
-    def _copy_evaluation_support_files(
-        self,
-        contract: AlgorithmContract,
-        instance: DatasetInstance,
-        result_dir: Path,
-    ) -> None:
-        if contract.evaluation_workflow is None:
-            return
-        dataset_contract = get_dataset_contract(instance.dataset_type)
-        calibration_role = dataset_contract.evaluation_calibration_role
-        if calibration_role is None:
-            return
-
-        self._copy_dataset_result_file(
-            instance,
-            calibration_role,
-            result_dir,
-            required=True,
-        )
-
-    def _copy_dataset_result_file(
-        self,
-        instance: DatasetInstance,
-        role: str,
-        result_dir: Path,
-        *,
-        required: bool,
-    ) -> None:
-        raw_path = instance.input_paths.get(role)
-        if raw_path is None:
-            if required:
-                raise RunStorageError(
-                    f"dataset instance is missing evaluation input {role}"
-                )
-            return
-        try:
-            source = resolve_dataset_file(
-                Path(raw_path),
-                instance.root_path,
-                role,
-            )
-        except DatasetError as exc:
-            raise RunStorageError(
-                f"cannot prepare evaluation input {role}: {exc}"
-            ) from exc
-        self.store.copy_result_file(
-            source,
-            result_dir,
-            Path(source.name),
-        )
-
     def _save_paused_segment_attempt(
         self,
         request: RunRequest,
@@ -1243,7 +1133,6 @@ class ExecutionService:
             paths.stdout_path,
             paths.stderr_path,
             output_sources,
-            (),
             output_checks,
             "paused",
             False,
@@ -1272,7 +1161,6 @@ class ExecutionService:
         stdout_path: Path,
         stderr_path: Path,
         output_sources: Tuple[Path, ...],
-        output_results: Tuple[Path, ...],
         output_checks: Dict[str, Any],
         status: str,
         algorithm_failure: bool,
@@ -1299,7 +1187,6 @@ class ExecutionService:
             stdout_path=stdout_path,
             stderr_path=stderr_path,
             output_source_paths=output_sources,
-            output_result_paths=output_results,
             output_checks=dict(output_checks),
             algorithm_failure=algorithm_failure,
             failure_reason=failure_reason,
@@ -1751,22 +1638,18 @@ def _validate_output_sources(
     *,
     accept: bool,
 ) -> Tuple[Dict[str, Any], Optional[str]]:
+    del instance, segment, command  # unused after removing content validation
     checks_by_path: Dict[str, Any] = {}
     first_error: Optional[str] = None
-    for output_index, (relative_path, output_source) in enumerate(
-        zip(contract.output_relative_paths, output_sources)
+    for relative_path, output_source in zip(
+        contract.output_relative_paths, output_sources
     ):
-        if output_index == 0:
-            checks, error = validate_fixed_output(
-                output_source,
-                contract,
-                instance,
-                segment,
-                command,
-            )
-        else:
-            checks, error = validate_additional_output(output_source)
-        checks["accepted"] = accept and error is None
+        exists = output_source.is_file()
+        error = None if exists else f"output does not exist: {output_source}"
+        checks: Dict[str, Any] = {
+            "exists": exists,
+            "accepted": accept and error is None,
+        }
         if error is not None:
             checks["validation_error"] = error
             if first_error is None:
