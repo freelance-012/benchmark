@@ -8,6 +8,12 @@ from .models import (
     EvaluationRequest,
     normalize_rpe_delta,
 )
+from .reeval import (
+    ReevaluationError,
+    ReevaluationRequest,
+    ReevaluationService,
+    ReevaluationSummary,
+)
 from .service import EvaluationError, EvaluationService
 from .workbook import SummaryWorkbookWriter
 
@@ -19,6 +25,10 @@ __all__ = [
     "DEFAULT_RPE_DELTA_UNIT",
     "DEFAULT_RPE_DELTA_VALUE",
     "RPE_DELTA_UNITS",
+    "ReevaluationError",
+    "ReevaluationRequest",
+    "ReevaluationService",
+    "ReevaluationSummary",
     "SummaryWorkbookWriter",
     "normalize_rpe_delta",
 ]

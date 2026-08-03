@@ -17,6 +17,8 @@ from slam_benchmark.evaluation import (
     EvaluationError,
     EvaluationRequest,
     EvaluationService,
+    ReevaluationRequest,
+    ReevaluationService,
     SummaryWorkbookWriter,
     normalize_rpe_delta,
 )
@@ -290,6 +292,13 @@ class EvaluationModuleTests(unittest.TestCase):
                         "rpe_delta_value": rpe_delta_value,
                         "rpe_delta_unit": rpe_delta_unit,
                     },
+                    "dataset_configs": [
+                        {
+                            "root_path": str(self.root / f"data-{run_index}"),
+                            "dataset_type": "rk3399",
+                        }
+                        for run_index in range(count)
+                    ],
                     "dataset_order": [
                         {
                             "dataset_id": f"dataset-{run_index}",
@@ -312,11 +321,13 @@ class EvaluationModuleTests(unittest.TestCase):
             encoding="utf-8",
         )
 
-    def _freeze_algorithm_contract(self, workflow: str) -> None:
+    def _freeze_algorithm_contract(
+        self, workflow: str, *, algorithm_id: str = "algorithm1"
+    ) -> None:
         (self.test_root / "config" / "algorithm.yaml").write_text(
             yaml.safe_dump(
                 {
-                    "algorithm": "algorithm",
+                    "algorithm": algorithm_id,
                     "contract": {
                         "evaluation_workflow": workflow,
                     },
@@ -439,6 +450,109 @@ print(f"fake voeval {mode}")
     @staticmethod
     def _yaml(path: Path):
         return yaml.safe_load(path.read_text(encoding="utf-8"))
+
+    def test_reeval_service_re_evaluates_existing_results(self) -> None:
+        """Test that ReevaluationService can re-evaluate existing test results."""
+        # Setup: Create a test directory with existing run results
+        self._freeze_algorithm_contract("sf_vo", algorithm_id="algorithm1")
+        self._freeze_segment_order(2)
+
+        # Create run receipts for two segments
+        segment_dir_0 = self._write_run_receipt(0, "success")
+        segment_dir_1 = self._write_run_receipt(1, "success")
+
+        # Add output_source_paths to receipts (required for reeval)
+        for i, segment_dir in enumerate([segment_dir_0, segment_dir_1]):
+            receipt_path = segment_dir / "receipt.yaml"
+            receipt = self._yaml(receipt_path)
+            receipt["output_source_paths"] = [str(segment_dir / "vo.txt")]
+            receipt["segment_start_timestamp"] = 0.0
+            receipt["segment_end_timestamp"] = 10.0
+            receipt_path.write_text(yaml.safe_dump(receipt), encoding="utf-8")
+
+            # Create fake output file
+            (segment_dir / "vo.txt").write_text("fake trajectory", encoding="utf-8")
+
+        # Execute re-evaluation
+        request = ReevaluationRequest(test_dir=self.test_root)
+        service = ReevaluationService(
+            evaluation_service=self.service,
+            summary_writer=self.writer,
+        )
+        summary = service.evaluate(request)
+
+        # Verify results
+        self.assertEqual(summary.status, "success")
+        self.assertEqual(summary.total_segments, 2)
+        self.assertEqual(summary.successful_segments, 2)
+        self.assertEqual(summary.failed_segments, 0)
+
+        # Verify timestamp-based report was created
+        self.assertTrue(summary.report_path.exists())
+        self.assertIn("run_summary_", summary.report_path.name)
+        self.assertTrue(summary.report_path.name.endswith(".xlsx"))
+
+        # Verify evaluation results exist
+        wf_config = EvaluationWorkflowConfig(workflow="sf_vo")
+        for i in range(2):
+            eval_dir = self.test_root / "dataset" / str(i) / "evaluation" / wf_config.directory_name
+            self.assertTrue((eval_dir / "receipt.yaml").exists())
+            self.assertTrue((eval_dir / "metrics.json").exists())
+
+    def test_reeval_cli_command_missing_test_dir(self) -> None:
+        """Test the evaluate CLI command with missing test directory."""
+        output = io.StringIO()
+        errors = io.StringIO()
+        with redirect_stdout(output), redirect_stderr(errors):
+            exit_code = main(
+                [
+                    "evaluate",
+                    "--test-dir",
+                    str(self.root / "nonexistent"),
+                ]
+            )
+
+        # Verify results
+        self.assertEqual(exit_code, 2)
+        error_text = errors.getvalue()
+        self.assertIn("test directory does not exist", error_text)
+
+    def test_reeval_with_custom_rpe_delta(self) -> None:
+        """Test re-evaluation with custom RPE delta values."""
+        self._freeze_algorithm_contract("sf_vo", algorithm_id="algorithm1")
+        self._freeze_segment_order(1, rpe_delta_value=100.0, rpe_delta_unit="m")
+        segment_dir = self._write_run_receipt(0, "success")
+
+        # Add required fields to receipt
+        receipt_path = segment_dir / "receipt.yaml"
+        receipt = self._yaml(receipt_path)
+        receipt["output_source_paths"] = [str(segment_dir / "vo.txt")]
+        receipt["segment_start_timestamp"] = 0.0
+        receipt["segment_end_timestamp"] = 10.0
+        receipt_path.write_text(yaml.safe_dump(receipt), encoding="utf-8")
+        (segment_dir / "vo.txt").write_text("fake trajectory", encoding="utf-8")
+
+        # Execute re-evaluation with custom RPE delta
+        request = ReevaluationRequest(
+            test_dir=self.test_root,
+            rpe_delta_value=50.0,
+            rpe_delta_unit="m",
+        )
+        service = ReevaluationService(
+            evaluation_service=self.service,
+            summary_writer=self.writer,
+        )
+        summary = service.evaluate(request)
+
+        self.assertEqual(summary.status, "success")
+
+        # Verify the evaluation used the custom delta
+        eval_dir = segment_dir / "evaluation" / "sf_vo"
+        receipt = self._yaml(eval_dir / "receipt.yaml")
+        self.assertIn("--delta", receipt["command"])
+        delta_idx = receipt["command"].index("--delta")
+        # .15g format removes trailing zeros, so 50.0 becomes "50"
+        self.assertEqual(receipt["command"][delta_idx + 1], "50")
 
 
 if __name__ == "__main__":

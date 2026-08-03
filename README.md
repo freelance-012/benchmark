@@ -28,6 +28,7 @@
 - 对绑定 SF VO 或 SF VLOC 评估工作流且运行成功的 Segment，立即调用用户环境中的 `voeval`；
 - 每次评估保存评估回执和 `voeval.log`；评估成功时保证 `metrics.json` 存在且有效，评估失败时不保证该文件存在或有效；
 - 仅对绑定评估工作流的算法，在每个 Segment 形成状态后重建本次测试的单表 `run_summary.xlsx`；
+- 支持对已有测试结果重新执行 voeval 评估并生成带时间戳的报告；
 - 在交互式终端显示各模块进度，并结合 Segment 时长和算法实时输出估算剩余时间。
 
 当前已注册真实 SF VO 输出契约 `orbslam3_mono_sf`；SF VLOC 的评估和汇总接口已经实现，但目前只有模拟算法用于验证流程，尚未接入真实 VLOC 算法。暂未实现 EuRoC 运行、回归对比和最终报告。
@@ -489,6 +490,7 @@ result/
         ├── build_receipt.yaml
         ├── checkpoint.yaml
         ├── run_summary.xlsx              # 仅绑定评估工作流且已进入汇总流程时生成
+        ├── run_summary_20260803_163501.xlsx  # evaluate 命令生成的带时间戳报告
         └── dataset/
             ├── 0/
             │   ├── receipt.yaml
@@ -498,9 +500,14 @@ result/
             │   ├── CALIBRATION_FILE         # 仅评估工作流需要
             │   ├── home_point.txt           # 仅真实 sf_vloc 算法输出
             │   └── evaluation/
-            │       ├── metrics.json         # 评估成功时保证存在且有效
-            │       ├── receipt.yaml         # 执行评估后生成
-            │       └── voeval.log           # 执行评估后生成
+            │       ├── sf_vo/               # 按工作流和轨迹文件分目录
+            │       │   ├── metrics.json     # 评估成功时保证存在且有效
+            │       │   ├── receipt.yaml     # 执行评估后生成
+            │       │   └── voeval.log       # 执行评估后生成
+            │       └── sf_vo_vo_other.txt/  # 多个轨迹文件评估时的独立目录
+            │           ├── metrics.json
+            │           ├── receipt.yaml
+            │           └── voeval.log
             ├── 1/
             └── ...
 ```
@@ -533,6 +540,27 @@ benchmark report \
 `metrics.json`，自动判断 SF VO 或 SF VLOC 表格格式，并重新生成或覆盖
 `run_summary.xlsx`。它不会重新编译算法、运行数据集或调用 voeval；缺失或
 失败的运行与评估结果仍按保存的事实写入表格。
+
+### 重新评估已有测试结果
+
+如果需要对已完成的测试重新执行 voeval 评估（例如调整 RPE 参数或更新评估逻辑），可以使用 `evaluate` 命令：
+
+```bash
+benchmark evaluate --test-dir /path/to/result/ALGORITHM_ID/TEST_ID
+```
+
+该命令会读取测试目录中的冻结配置和 Segment 运行结果，对所有成功的 Segment 重新执行 voeval 评估，并生成带时间戳的报告文件（例如 `run_summary_20260803_163501.xlsx`）。原有的 `run_summary.xlsx` 不会被覆盖。
+
+可以覆盖冻结配置中的 RPE 参数：
+
+```bash
+benchmark evaluate \
+  --test-dir /path/to/result/ALGORITHM_ID/TEST_ID \
+  --rpe-delta 50 \
+  --rpe-unit m
+```
+
+评估结果保存在各 Segment 目录下的 `evaluation/` 子目录中，格式与首次运行相同。
 
 运行成功后，系统按数据集契约把 voeval 使用的单份外参复制到
 当前数字 Segment 目录：RK3399 使用 `calib_raw.yaml`，RK3588 使用

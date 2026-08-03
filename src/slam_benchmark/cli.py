@@ -25,11 +25,15 @@ from .evaluation import (
     DEFAULT_RPE_DELTA_VALUE,
     RPE_DELTA_UNITS,
     EvaluationError,
+    ReevaluationError,
+    ReevaluationRequest,
+    ReevaluationService,
     SummaryWorkbookWriter,
 )
 from .progress import (
     MODULE_BUILD,
     MODULE_DATASET,
+    MODULE_EVALUATE,
     MODULE_REPORT,
     MODULE_TOTAL,
     PIPELINE_MODULES,
@@ -147,6 +151,27 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         help="saved result/ALGORITHM_ID/TEST_ID directory",
     )
+
+    evaluate = modules.add_parser(
+        "evaluate",
+        help="re-evaluate existing test results and generate timestamped report",
+    )
+    evaluate.add_argument(
+        "--test-dir",
+        required=True,
+        type=Path,
+        help="saved result/ALGORITHM_ID/TEST_ID directory",
+    )
+    evaluate.add_argument(
+        "--rpe-delta",
+        type=float,
+        help="RPE interval value; if not provided, uses frozen configuration",
+    )
+    evaluate.add_argument(
+        "--rpe-unit",
+        choices=RPE_DELTA_UNITS,
+        help="RPE interval unit: m=meters, f=frames; if not provided, uses frozen configuration",
+    )
     return parser
 
 
@@ -160,6 +185,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         "build": (MODULE_TOTAL, MODULE_BUILD),
         "run": PIPELINE_MODULES,
         "report": (MODULE_TOTAL, MODULE_REPORT),
+        "evaluate": (MODULE_TOTAL, MODULE_EVALUATE, MODULE_REPORT),
     }[args.module]
     with debug_mode(debug), TerminalProgress(
         modules,
@@ -174,7 +200,15 @@ def main(argv: Optional[List[str]] = None) -> int:
                 return _run_execution_command(args, progress)
             if args.module == "report":
                 return _run_report_command(args, progress)
-        except (DatasetError, BuildError, ExecutionError, EvaluationError) as exc:
+            if args.module == "evaluate":
+                return _run_evaluate_command(args, progress)
+        except (
+            DatasetError,
+            BuildError,
+            ExecutionError,
+            EvaluationError,
+            ReevaluationError,
+        ) as exc:
             progress.close()
             print(f"error: {exc}", file=sys.stderr)
             return 2
@@ -328,6 +362,35 @@ def _run_report_command(
     progress.close()
     print(f"[SUCCESS] report: {output_path}")
     return 0
+
+
+def _run_evaluate_command(
+    args: argparse.Namespace,
+    progress: ProgressReporter,
+) -> int:
+    request = ReevaluationRequest(
+        test_dir=args.test_dir,
+        rpe_delta_value=args.rpe_delta,
+        rpe_delta_unit=args.rpe_unit,
+    )
+    service = ReevaluationService(progress=progress)
+    summary = service.evaluate(request)
+
+    progress.close()
+    message = (
+        f"[{summary.status.upper()}] "
+        f"segments {summary.successful_segments} success, "
+        f"{summary.failed_segments} failed, "
+        f"{summary.skipped_segments} skipped; "
+        f"report: {summary.report_path}"
+    )
+    if summary.status == "success":
+        print(message)
+        return 0
+    print(message, file=sys.stderr)
+    if summary.failure_reason:
+        print(f"reason: {summary.failure_reason}", file=sys.stderr)
+    return 1
 
 
 def _progress_status(status: str) -> str:

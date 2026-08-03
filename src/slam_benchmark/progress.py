@@ -509,6 +509,9 @@ class TerminalProgress(AbstractContextManager):
                 self.finish(module, status=unfinished_status)
             self._progress.stop()
             self._closed = True
+            console = self._progress.console
+            console.file.write("\n\n")
+            console.file.flush()
         finally:
             self._closing = False
 

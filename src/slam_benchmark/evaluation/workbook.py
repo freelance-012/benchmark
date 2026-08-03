@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import tempfile
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
@@ -32,6 +33,12 @@ from .service import (
 SUMMARY_FILENAME = "run_summary.xlsx"
 
 
+def _generate_timestamped_filename() -> str:
+    """Generate a timestamped filename for the summary report."""
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    return f"run_summary_{timestamp}.xlsx"
+
+
 @dataclass(frozen=True)
 class _SummaryRow:
     run_index: int
@@ -44,18 +51,22 @@ class _SummaryRow:
 
 
 class SummaryWorkbookWriter:
-    def generate_from_test(self, test_root: Path) -> Path:
+    def generate_from_test(
+        self, test_root: Path, *, use_timestamp: bool = False
+    ) -> Path:
         root = test_root.expanduser().resolve()
         if not root.is_dir():
             raise EvaluationError(f"test directory does not exist: {root}")
         algorithm_config = _load_yaml(root / "config" / "algorithm.yaml")
         workflows = _workflows_from_algorithm_config(algorithm_config)
-        return self.update(root, workflows)
+        return self.update(root, workflows, use_timestamp=use_timestamp)
 
     def update(
         self,
         test_root: Path,
         workflows: Sequence[EvaluationWorkflowConfig],
+        *,
+        use_timestamp: bool = False,
     ) -> Path:
         for wf in workflows:
             if wf.workflow not in {
@@ -76,7 +87,10 @@ class SummaryWorkbookWriter:
         for wf in workflows:
             rows = self._load_rows(root, wf)
             sheet_data.append((wf.directory_name, wf.workflow, rows))
-        output_path = root / SUMMARY_FILENAME
+        output_filename = (
+            _generate_timestamped_filename() if use_timestamp else SUMMARY_FILENAME
+        )
+        output_path = root / output_filename
         self._write_atomic(
             output_path,
             sheet_data,
