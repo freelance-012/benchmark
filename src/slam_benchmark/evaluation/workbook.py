@@ -114,6 +114,7 @@ class SummaryWorkbookWriter:
             )
 
             run_receipt_path = segment_dir / "receipt.yaml"
+            result_path = segment_dir
             if run_receipt_path.is_file():
                 try:
                     run_receipt = _load_yaml(run_receipt_path)
@@ -125,6 +126,9 @@ class SummaryWorkbookWriter:
                     raw_reason = run_receipt.get("failure_reason")
                     if raw_reason is not None:
                         failure_reason = str(raw_reason)
+                    output_source_paths = run_receipt.get("output_source_paths", [])
+                    if output_source_paths:
+                        result_path = Path(output_source_paths[0]).parent
 
             evaluation_receipt_path = segment_dir / "evaluation" / "receipt.yaml"
             if run_status == "success" and evaluation_receipt_path.is_file():
@@ -158,7 +162,7 @@ class SummaryWorkbookWriter:
             rows.append(
                 _SummaryRow(
                     run_index=run_index,
-                    result_path=segment_dir,
+                    result_path=result_path,
                     dataset_path=dataset_paths[dataset_id],
                     run_status=run_status,
                     evaluation_status=evaluation_status,
