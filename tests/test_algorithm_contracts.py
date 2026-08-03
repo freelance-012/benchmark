@@ -74,7 +74,6 @@ class AlgorithmContractTests(unittest.TestCase):
             Path("Examples/Monocular/mono_sf"),
         )
         self.assertEqual(contract.fixed_output_relative_path, Path("vo.txt"))
-        self.assertEqual(contract.output_validator, "sf_vo")
         self.assertEqual(contract.evaluation_workflow, "sf_vo")
         self.assertEqual(contract.supported_dataset_types, ("rk3399",))
         self.assertEqual(

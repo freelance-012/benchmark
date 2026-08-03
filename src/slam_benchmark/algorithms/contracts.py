@@ -57,7 +57,6 @@ class AlgorithmContract:
     fixed_output_relative_path: Path
     additional_output_relative_paths: Tuple[Path, ...] = ()
     numbered_output_counter_relative_path: Optional[Path] = None
-    output_validator: str = "not_configured"
     progress_parser: Optional[str] = None
     dataset_run_contracts: Tuple[DatasetRunContract, ...] = ()
     evaluation_workflow: Optional[str] = None
@@ -119,7 +118,6 @@ class AlgorithmContract:
             "fixed_output_relative_paths": [
                 str(item) for item in self.output_relative_paths
             ],
-            "output_validator": self.output_validator,
             "evaluation_workflow": self.evaluation_workflow,
             "supported_dataset_types": list(self.supported_dataset_types),
             "dataset_run_contracts": [
@@ -147,7 +145,6 @@ _CONTRACTS = {
         entrypoint_relative_path=Path("build/algorithm1"),
         fixed_output_relative_path=Path("mock_output.txt"),
         numbered_output_counter_relative_path=Path("log_count.txt"),
-        output_validator="mock_key_value",
         progress_parser="benchmark_json_v1",
         evaluation_workflow=EVALUATION_WORKFLOW_SF_VO,
         dataset_run_contracts=(
@@ -183,7 +180,6 @@ _CONTRACTS = {
         entrypoint_relative_path=Path("build/algorithm2"),
         fixed_output_relative_path=Path("mock_output.txt"),
         additional_output_relative_paths=(Path("home_point.txt"),),
-        output_validator="mock_key_value",
         evaluation_workflow=EVALUATION_WORKFLOW_SF_VLOC,
         dataset_run_contracts=(
             DatasetRunContract(
@@ -203,7 +199,6 @@ _CONTRACTS = {
         contract_version=4,
         entrypoint_relative_path=Path("build/algorithm3"),
         fixed_output_relative_path=Path("mock_output.txt"),
-        output_validator="mock_key_value",
         dataset_run_contracts=(
             DatasetRunContract(
                 dataset_type="kitti",
@@ -233,7 +228,6 @@ _CONTRACTS = {
         contract_version=2,
         entrypoint_relative_path=Path("Examples/Monocular/mono_sf"),
         fixed_output_relative_path=Path("vo.txt"),
-        output_validator="sf_vo",
         evaluation_workflow=EVALUATION_WORKFLOW_SF_VO,
         dataset_run_contracts=(
             DatasetRunContract(
@@ -253,8 +247,7 @@ _CONTRACTS = {
         contract_version=3,
         entrypoint_relative_path=Path("bin/sfvision"),
         numbered_output_counter_relative_path=Path("log_count.txt"),
-        fixed_output_relative_path=Path("vo.txt"),
-        output_validator="sf_vo",
+        fixed_output_relative_path=Path("vloc.txt"),
         evaluation_workflow=EVALUATION_WORKFLOW_SF_VLOC,
         evaluation_workflows=(
             EvaluationWorkflowConfig(workflow=EVALUATION_WORKFLOW_SF_VLOC),
@@ -263,6 +256,30 @@ _CONTRACTS = {
             ),
             EvaluationWorkflowConfig(
                 workflow=EVALUATION_WORKFLOW_SF_VO, vo_filename="sift_vo.txt"
+            ),
+        ),
+        dataset_run_contracts=(
+            DatasetRunContract(
+                dataset_type="rk3399",
+                required_input_roles=(
+                    "imu_path",
+                    "image_path",
+                    "image_timestamps_path",
+                    "calibration_path",
+                ),
+            ),
+        ),
+    ),
+    "sf_slam": AlgorithmContract(
+        algorithm_id="sf_slam",
+        display_name="sf_slam",
+        contract_version=0,
+        entrypoint_relative_path=Path("bin/sf_slam_cli"),
+        numbered_output_counter_relative_path=Path("log_count.txt"),
+        fixed_output_relative_path=Path("sf_slam.txt"),
+        evaluation_workflows=(
+            EvaluationWorkflowConfig(
+                workflow=EVALUATION_WORKFLOW_SF_VO, vo_filename="sf_slam.txt"
             ),
         ),
         dataset_run_contracts=(
