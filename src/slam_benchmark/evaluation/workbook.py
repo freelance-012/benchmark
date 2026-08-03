@@ -6,13 +6,14 @@ import os
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, Optional, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 import yaml
 
 from ..algorithms.contracts import (
     EVALUATION_WORKFLOW_SF_VLOC,
     EVALUATION_WORKFLOW_SF_VO,
+    EvaluationWorkflowConfig,
 )
 from ..debug import debug_input, debug_output
 from .models import (
@@ -48,34 +49,44 @@ class SummaryWorkbookWriter:
         if not root.is_dir():
             raise EvaluationError(f"test directory does not exist: {root}")
         algorithm_config = _load_yaml(root / "config" / "algorithm.yaml")
-        workflow = _workflow_from_algorithm_config(algorithm_config)
-        return self.update(root, workflow)
+        workflows = _workflows_from_algorithm_config(algorithm_config)
+        return self.update(root, workflows)
 
-    def update(self, test_root: Path, workflow: str) -> Path:
-        if workflow not in {
-            EVALUATION_WORKFLOW_SF_VO,
-            EVALUATION_WORKFLOW_SF_VLOC,
-        }:
-            raise EvaluationError(f"unsupported summary workflow: {workflow}")
+    def update(
+        self,
+        test_root: Path,
+        workflows: Sequence[EvaluationWorkflowConfig],
+    ) -> Path:
+        for wf in workflows:
+            if wf.workflow not in {
+                EVALUATION_WORKFLOW_SF_VO,
+                EVALUATION_WORKFLOW_SF_VLOC,
+            }:
+                raise EvaluationError(f"unsupported summary workflow: {wf.workflow}")
         root = test_root.expanduser().resolve()
         debug_input(
             "REPORT",
             source=root / "dataset",
-            workflow=workflow,
+            workflows=[w.directory_name for w in workflows],
         )
-        rows, rpe_delta_value, rpe_delta_unit = self._load_rows(root, workflow)
+        rpe_delta_value, rpe_delta_unit = _rpe_delta_from_run_config(
+            _load_yaml(root / "config" / "run.yaml")
+        )
+        sheet_data: List[Tuple[str, str, Tuple[_SummaryRow, ...]]] = []
+        for wf in workflows:
+            rows = self._load_rows(root, wf)
+            sheet_data.append((wf.directory_name, wf.workflow, rows))
         output_path = root / SUMMARY_FILENAME
         self._write_atomic(
             output_path,
-            workflow,
-            rows,
+            sheet_data,
             rpe_delta_value,
             rpe_delta_unit,
         )
         debug_output(
             "REPORT",
             input=root / "dataset",
-            rows=len(rows),
+            sheets=len(sheet_data),
             saved=output_path,
         )
         return output_path
@@ -83,8 +94,8 @@ class SummaryWorkbookWriter:
     def _load_rows(
         self,
         test_root: Path,
-        workflow: str,
-    ) -> Tuple[Tuple[_SummaryRow, ...], float, str]:
+        workflow_config: EvaluationWorkflowConfig,
+    ) -> Tuple[_SummaryRow, ...]:
         run_config = _load_yaml(test_root / "config" / "run.yaml")
         rpe_delta_value, rpe_delta_unit = _rpe_delta_from_run_config(run_config)
         dataset_paths = _dataset_paths_from_run_config(run_config)
@@ -92,6 +103,7 @@ class SummaryWorkbookWriter:
         if not isinstance(raw_order, list):
             raise EvaluationError("frozen run configuration has no segment_order")
 
+        workflow = workflow_config.workflow
         rows: List[_SummaryRow] = []
         for item in raw_order:
             if not isinstance(item, dict) or "run_index" not in item:
@@ -99,7 +111,7 @@ class SummaryWorkbookWriter:
             try:
                 run_index = int(item["run_index"])
             except (TypeError, ValueError) as exc:
-                raise EvaluationError("frozen run_index is invalid") from exc
+                raise EvaluationError(f"frozen run_index is invalid") from exc
             dataset_id = item.get("dataset_id")
             if not isinstance(dataset_id, str) or dataset_id not in dataset_paths:
                 raise EvaluationError(
@@ -130,7 +142,8 @@ class SummaryWorkbookWriter:
                     if output_source_paths:
                         result_path = Path(output_source_paths[0]).parent
 
-            evaluation_receipt_path = segment_dir / "evaluation" / "receipt.yaml"
+            eval_subdir = segment_dir / "evaluation" / workflow_config.directory_name
+            evaluation_receipt_path = eval_subdir / "receipt.yaml"
             if run_status == "success" and evaluation_receipt_path.is_file():
                 try:
                     evaluation_receipt = _load_yaml(evaluation_receipt_path)
@@ -146,7 +159,7 @@ class SummaryWorkbookWriter:
                         failure_reason = str(raw_reason)
 
                     if evaluation_status == "success":
-                        metrics_path = segment_dir / "evaluation" / "metrics.json"
+                        metrics_path = eval_subdir / "metrics.json"
                         try:
                             metrics, _ = load_metrics(
                                 metrics_path,
@@ -170,188 +183,33 @@ class SummaryWorkbookWriter:
                     metrics=values,
                 )
             )
-        return (
-            tuple(sorted(rows, key=lambda row: row.run_index)),
-            rpe_delta_value,
-            rpe_delta_unit,
-        )
+        return tuple(sorted(rows, key=lambda row: row.run_index))
 
     @staticmethod
     def _write_atomic(
         output_path: Path,
-        workflow: str,
-        rows: Tuple[_SummaryRow, ...],
+        sheet_data: Sequence[Tuple[str, str, Tuple[_SummaryRow, ...]]],
         rpe_delta_value: float,
         rpe_delta_unit: str,
     ) -> None:
         try:
             from openpyxl import Workbook
-            from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
         except ImportError as exc:
             raise EvaluationError(
                 "openpyxl is required to generate run_summary.xlsx"
             ) from exc
 
         workbook = Workbook()
-        sheet = workbook.active
-        sheet.title = "Summary"
-        sheet.sheet_view.showGridLines = False
+        workbook.remove(workbook.active)
 
-        header_fill = PatternFill("solid", fgColor="1F4E78")
-        header_font = Font(color="FFFFFF", bold=True)
-        thin = Side(style="thin", color="D9E2F3")
-        border = Border(left=thin, right=thin, top=thin, bottom=thin)
-        center = Alignment(horizontal="center", vertical="center")
-        left = Alignment(horizontal="left", vertical="center")
-        yellow_fill = PatternFill("solid", fgColor="FFF2CC")
-        red_fill = PatternFill("solid", fgColor="FFC7CE")
-
-        metric_keys = _metric_keys(workflow)
-        metric_start_column = 4
-        if workflow == EVALUATION_WORKFLOW_SF_VO:
-            metric_titles = ("RMSE", "Mean", "Median", "Max", "Min", "Count")
-            sheet.merge_cells("A1:A2")
-            sheet.merge_cells("B1:B2")
-            sheet.merge_cells("C1:C2")
-            sheet.merge_cells("D1:I1")
-            sheet.merge_cells("J1:J2")
-            sheet["A1"] = "运行编号"
-            sheet["B1"] = "结果路径"
-            sheet["C1"] = "数据集路径"
-            sheet["D1"] = (
-                "RPE 平移误差 "
-                f"(delta={_format_rpe_delta(rpe_delta_value, rpe_delta_unit)})"
-            )
-            sheet["J1"] = "Segment 数量"
-            for column, title in enumerate(
-                metric_titles,
-                start=metric_start_column,
-            ):
-                sheet.cell(row=2, column=column, value=title)
-            status_column = 11
-            data_start_row = 3
-            for column, title in enumerate(
-                ("运行状态", "评估状态", "失败原因"),
-                start=status_column,
-            ):
-                start = sheet.cell(row=1, column=column, value=title)
-                sheet.merge_cells(
-                    start_row=1,
-                    start_column=column,
-                    end_row=2,
-                    end_column=column,
-                )
-                start.alignment = center
-            sheet.freeze_panes = "A3"
-        else:
-            headers = (
-                "运行编号",
-                "结果路径",
-                "数据集路径",
-                *metric_keys,
-                "运行状态",
-                "评估状态",
-                "失败原因",
-            )
-            for column, title in enumerate(headers, start=1):
-                sheet.cell(row=1, column=column, value=title)
-            status_column = metric_start_column + len(metric_keys)
-            data_start_row = 2
-            sheet.freeze_panes = "A2"
-
-        max_header_row = data_start_row - 1
-        total_columns = status_column + 2
-        for row in sheet.iter_rows(
-            min_row=1,
-            max_row=max_header_row,
-            min_col=1,
-            max_col=total_columns,
-        ):
-            for cell in row:
-                cell.fill = header_fill
-                cell.font = header_font
-                cell.alignment = center
-                cell.border = border
-
-        for row_offset, summary in enumerate(rows):
-            row_number = data_start_row + row_offset
-            sheet.cell(row=row_number, column=1, value=summary.run_index)
-            path_cell = sheet.cell(
-                row=row_number,
-                column=2,
-                value=str(summary.result_path),
-            )
-            path_cell.hyperlink = summary.result_path.as_uri()
-            path_cell.style = "Hyperlink"
-            dataset_cell = sheet.cell(
-                row=row_number,
-                column=3,
-                value=str(summary.dataset_path),
-            )
-            dataset_cell.hyperlink = summary.dataset_path.as_uri()
-            dataset_cell.style = "Hyperlink"
-
-            for metric_offset, value in enumerate(
-                summary.metrics,
-                start=metric_start_column,
-            ):
-                cell = sheet.cell(row=row_number, column=metric_offset, value=value)
-                if value is not None:
-                    metric_key = metric_keys[metric_offset - metric_start_column]
-                    if metric_key in {"count", "segment_count"}:
-                        cell.number_format = "0"
-                    else:
-                        cell.number_format = "0.000000"
-
-            sheet.cell(
-                row=row_number,
-                column=status_column,
-                value=summary.run_status,
-            )
-            sheet.cell(
-                row=row_number,
-                column=status_column + 1,
-                value=summary.evaluation_status,
-            )
-            sheet.cell(
-                row=row_number,
-                column=status_column + 2,
-                value=summary.failure_reason,
-            )
-
-            if workflow == EVALUATION_WORKFLOW_SF_VLOC:
-                horizontal_error = sheet.cell(
-                    row=row_number,
-                    column=metric_start_column
-                    + metric_keys.index("mean_error_pos_xy"),
-                )
-                if horizontal_error.value is not None:
-                    if float(horizontal_error.value) > 50.0:
-                        horizontal_error.fill = red_fill
-                    elif float(horizontal_error.value) > 20.0:
-                        horizontal_error.fill = yellow_fill
-
-            for column in range(1, total_columns + 1):
-                cell = sheet.cell(row=row_number, column=column)
-                cell.border = border
-                cell.alignment = (
-                    left if column in {2, 3, total_columns} else center
-                )
-
-        sheet.column_dimensions["A"].width = 12
-        sheet.column_dimensions["B"].width = 58
-        sheet.column_dimensions["C"].width = 58
-        for column in range(metric_start_column, status_column):
-            sheet.column_dimensions[_column_letter(column)].width = 22
-        sheet.column_dimensions[_column_letter(status_column)].width = 14
-        sheet.column_dimensions[_column_letter(status_column + 1)].width = 14
-        sheet.column_dimensions[_column_letter(status_column + 2)].width = 48
-        sheet.row_dimensions[1].height = 24
-        if workflow == EVALUATION_WORKFLOW_SF_VO:
-            sheet.row_dimensions[2].height = 22
-        if rows and workflow == EVALUATION_WORKFLOW_SF_VLOC:
-            sheet.auto_filter.ref = (
-                f"A1:{_column_letter(total_columns)}{data_start_row + len(rows) - 1}"
+        for sheet_name, workflow, rows in sheet_data:
+            _write_sheet(
+                workbook,
+                sheet_name,
+                workflow,
+                rows,
+                rpe_delta_value,
+                rpe_delta_unit,
             )
 
         temporary: Optional[Path] = None
@@ -376,10 +234,179 @@ class SummaryWorkbookWriter:
                 temporary.unlink(missing_ok=True)
 
 
+def _write_sheet(
+    workbook: Any,
+    sheet_name: str,
+    workflow: str,
+    rows: Tuple[_SummaryRow, ...],
+    rpe_delta_value: float,
+    rpe_delta_unit: str,
+) -> None:
+    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+
+    sheet = workbook.create_sheet(title=sheet_name)
+    sheet.sheet_view.showGridLines = False
+
+    header_fill = PatternFill("solid", fgColor="1F4E78")
+    header_font = Font(color="FFFFFF", bold=True)
+    thin = Side(style="thin", color="D9E2F3")
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+    center = Alignment(horizontal="center", vertical="center")
+    left = Alignment(horizontal="left", vertical="center")
+    yellow_fill = PatternFill("solid", fgColor="FFF2CC")
+    red_fill = PatternFill("solid", fgColor="FFC7CE")
+
+    metric_keys = _metric_keys(workflow)
+    metric_start_column = 4
+    if workflow == EVALUATION_WORKFLOW_SF_VO:
+        metric_titles = ("RMSE", "Mean", "Median", "Max", "Min", "Count")
+        sheet.merge_cells("A1:A2")
+        sheet.merge_cells("B1:B2")
+        sheet.merge_cells("C1:C2")
+        sheet.merge_cells("D1:I1")
+        sheet.merge_cells("J1:J2")
+        sheet["A1"] = "运行编号"
+        sheet["B1"] = "结果路径"
+        sheet["C1"] = "数据集路径"
+        sheet["D1"] = (
+            "RPE 平移误差 "
+            f"(delta={_format_rpe_delta(rpe_delta_value, rpe_delta_unit)})"
+        )
+        sheet["J1"] = "Segment 数量"
+        for column, title in enumerate(
+            metric_titles,
+            start=metric_start_column,
+        ):
+            sheet.cell(row=2, column=column, value=title)
+        status_column = 11
+        data_start_row = 3
+        for column, title in enumerate(
+            ("运行状态", "评估状态", "失败原因"),
+            start=status_column,
+        ):
+            start = sheet.cell(row=1, column=column, value=title)
+            sheet.merge_cells(
+                start_row=1,
+                start_column=column,
+                end_row=2,
+                end_column=column,
+            )
+            start.alignment = center
+        sheet.freeze_panes = "A3"
+    else:
+        headers = (
+            "运行编号",
+            "结果路径",
+            "数据集路径",
+            *metric_keys,
+            "运行状态",
+            "评估状态",
+            "失败原因",
+        )
+        for column, title in enumerate(headers, start=1):
+            sheet.cell(row=1, column=column, value=title)
+        status_column = metric_start_column + len(metric_keys)
+        data_start_row = 2
+        sheet.freeze_panes = "A2"
+
+    max_header_row = data_start_row - 1
+    total_columns = status_column + 2
+    for row in sheet.iter_rows(
+        min_row=1,
+        max_row=max_header_row,
+        min_col=1,
+        max_col=total_columns,
+    ):
+        for cell in row:
+            cell.fill = header_fill
+            cell.font = header_font
+            cell.alignment = center
+            cell.border = border
+
+    for row_offset, summary in enumerate(rows):
+        row_number = data_start_row + row_offset
+        sheet.cell(row=row_number, column=1, value=summary.run_index)
+        path_cell = sheet.cell(
+            row=row_number,
+            column=2,
+            value=str(summary.result_path),
+        )
+        path_cell.hyperlink = summary.result_path.as_uri()
+        path_cell.style = "Hyperlink"
+        dataset_cell = sheet.cell(
+            row=row_number,
+            column=3,
+            value=str(summary.dataset_path),
+        )
+        dataset_cell.hyperlink = summary.dataset_path.as_uri()
+        dataset_cell.style = "Hyperlink"
+
+        for metric_offset, value in enumerate(
+            summary.metrics,
+            start=metric_start_column,
+        ):
+            cell = sheet.cell(row=row_number, column=metric_offset, value=value)
+            if value is not None:
+                metric_key = metric_keys[metric_offset - metric_start_column]
+                if metric_key in {"count", "segment_count"}:
+                    cell.number_format = "0"
+                else:
+                    cell.number_format = "0.000000"
+
+        sheet.cell(
+            row=row_number,
+            column=status_column,
+            value=summary.run_status,
+        )
+        sheet.cell(
+            row=row_number,
+            column=status_column + 1,
+            value=summary.evaluation_status,
+        )
+        sheet.cell(
+            row=row_number,
+            column=status_column + 2,
+            value=summary.failure_reason,
+        )
+
+        if workflow == EVALUATION_WORKFLOW_SF_VLOC:
+            horizontal_error = sheet.cell(
+                row=row_number,
+                column=metric_start_column
+                + metric_keys.index("mean_error_pos_xy"),
+            )
+            if horizontal_error.value is not None:
+                if float(horizontal_error.value) > 50.0:
+                    horizontal_error.fill = red_fill
+                elif float(horizontal_error.value) > 20.0:
+                    horizontal_error.fill = yellow_fill
+
+        for column in range(1, total_columns + 1):
+            cell = sheet.cell(row=row_number, column=column)
+            cell.border = border
+            cell.alignment = left if column in {2, 3, total_columns} else center
+
+    sheet.column_dimensions["A"].width = 12
+    sheet.column_dimensions["B"].width = 58
+    sheet.column_dimensions["C"].width = 58
+    for column in range(metric_start_column, status_column):
+        sheet.column_dimensions[_column_letter(column)].width = 22
+    sheet.column_dimensions[_column_letter(status_column)].width = 14
+    sheet.column_dimensions[_column_letter(status_column + 1)].width = 14
+    sheet.column_dimensions[_column_letter(status_column + 2)].width = 48
+    sheet.row_dimensions[1].height = 24
+    if workflow == EVALUATION_WORKFLOW_SF_VO:
+        sheet.row_dimensions[2].height = 22
+    if rows and workflow == EVALUATION_WORKFLOW_SF_VLOC:
+        sheet.auto_filter.ref = (
+            f"A1:{_column_letter(total_columns)}{data_start_row + len(rows) - 1}"
+        )
+
+
 def _load_yaml(path: Path) -> Dict[str, Any]:
     try:
         payload: Any = yaml.safe_load(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, yaml.YAMLError) as exc:
+    except (OSError, yaml.YAMLError, ValueError) as exc:
         raise EvaluationError(f"cannot read YAML {path}: {exc}") from exc
     if not isinstance(payload, dict):
         raise EvaluationError(f"YAML root must be a mapping: {path}")
@@ -394,12 +421,35 @@ def _metric_keys(workflow: str) -> Tuple[str, ...]:
     raise EvaluationError(f"unsupported summary workflow: {workflow}")
 
 
-def _workflow_from_algorithm_config(config: Mapping[str, Any]) -> str:
+def _workflows_from_algorithm_config(
+    config: Mapping[str, Any],
+) -> Tuple[EvaluationWorkflowConfig, ...]:
     contract = config.get("contract")
     if not isinstance(contract, Mapping):
         raise EvaluationError(
             "frozen algorithm configuration has no contract mapping"
         )
+    raw_workflows = contract.get("evaluation_workflows")
+    if isinstance(raw_workflows, list) and raw_workflows:
+        workflows = []
+        for item in raw_workflows:
+            if not isinstance(item, Mapping):
+                raise EvaluationError("evaluation_workflows contains an invalid item")
+            workflow = item.get("workflow")
+            if not isinstance(workflow, str) or workflow not in {
+                EVALUATION_WORKFLOW_SF_VO,
+                EVALUATION_WORKFLOW_SF_VLOC,
+            }:
+                raise EvaluationError(
+                    f"evaluation_workflows has unsupported workflow: {workflow!r}"
+                )
+            vo_filename = item.get("vo_filename")
+            if vo_filename is not None and not isinstance(vo_filename, str):
+                raise EvaluationError("vo_filename must be a string or null")
+            workflows.append(
+                EvaluationWorkflowConfig(workflow=workflow, vo_filename=vo_filename)
+            )
+        return tuple(workflows)
     workflow = contract.get("evaluation_workflow")
     if not isinstance(workflow, str) or workflow not in {
         EVALUATION_WORKFLOW_SF_VO,
@@ -408,7 +458,7 @@ def _workflow_from_algorithm_config(config: Mapping[str, Any]) -> str:
         raise EvaluationError(
             "frozen algorithm contract has no supported evaluation workflow"
         )
-    return workflow
+    return (EvaluationWorkflowConfig(workflow=workflow, vo_filename=None),)
 
 
 def _rpe_delta_from_run_config(config: Mapping[str, Any]) -> Tuple[float, str]:

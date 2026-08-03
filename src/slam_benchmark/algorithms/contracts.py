@@ -11,6 +11,26 @@ EVALUATION_WORKFLOW_SF_VLOC = "sf_vloc"
 
 
 @dataclass(frozen=True)
+class EvaluationWorkflowConfig:
+    """Configuration for one evaluation workflow."""
+
+    workflow: str
+    vo_filename: Optional[str] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        result: Dict[str, Any] = {"workflow": self.workflow}
+        if self.vo_filename is not None:
+            result["vo_filename"] = self.vo_filename
+        return result
+
+    @property
+    def directory_name(self) -> str:
+        if self.vo_filename is not None:
+            return f"{self.workflow}_{self.vo_filename}"
+        return self.workflow
+
+
+@dataclass(frozen=True)
 class DatasetRunContract:
     """Ordered algorithm inputs for one supported dataset type."""
 
@@ -41,6 +61,7 @@ class AlgorithmContract:
     progress_parser: Optional[str] = None
     dataset_run_contracts: Tuple[DatasetRunContract, ...] = ()
     evaluation_workflow: Optional[str] = None
+    evaluation_workflows: Tuple[EvaluationWorkflowConfig, ...] = ()
     supported_dataset_types: Tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
@@ -60,8 +81,12 @@ class AlgorithmContract:
                 raise ValueError(
                     "supported_dataset_types must match dataset_run_contracts"
                 )
-            return
-        object.__setattr__(self, "supported_dataset_types", run_dataset_types)
+        else:
+            object.__setattr__(self, "supported_dataset_types", run_dataset_types)
+        if self.evaluation_workflows and self.evaluation_workflow is None:
+            object.__setattr__(
+                self, "evaluation_workflow", self.evaluation_workflows[0].workflow
+            )
 
     def run_contract_for(self, dataset_type: str) -> DatasetRunContract:
         normalized = str(dataset_type).strip().lower()
@@ -86,7 +111,7 @@ class AlgorithmContract:
         )
 
     def to_dict(self) -> Dict[str, Any]:
-        payload = {
+        payload: Dict[str, Any] = {
             "algorithm_id": self.algorithm_id,
             "display_name": self.display_name,
             "contract_version": self.contract_version,
@@ -107,6 +132,10 @@ class AlgorithmContract:
             )
         if self.progress_parser is not None:
             payload["progress_parser"] = self.progress_parser
+        if self.evaluation_workflows:
+            payload["evaluation_workflows"] = [
+                item.to_dict() for item in self.evaluation_workflows
+            ]
         return payload
 
 
@@ -221,12 +250,21 @@ _CONTRACTS = {
     "sfvision": AlgorithmContract(
         algorithm_id="sfvision",
         display_name="sfvision",
-        contract_version=2,
+        contract_version=3,
         entrypoint_relative_path=Path("bin/sfvision"),
         numbered_output_counter_relative_path=Path("log_count.txt"),
         fixed_output_relative_path=Path("vo.txt"),
         output_validator="sf_vo",
         evaluation_workflow=EVALUATION_WORKFLOW_SF_VLOC,
+        evaluation_workflows=(
+            EvaluationWorkflowConfig(workflow=EVALUATION_WORKFLOW_SF_VLOC),
+            EvaluationWorkflowConfig(
+                workflow=EVALUATION_WORKFLOW_SF_VO, vo_filename="sf_slam.txt"
+            ),
+            EvaluationWorkflowConfig(
+                workflow=EVALUATION_WORKFLOW_SF_VO, vo_filename="sift_vo.txt"
+            ),
+        ),
         dataset_run_contracts=(
             DatasetRunContract(
                 dataset_type="rk3399",

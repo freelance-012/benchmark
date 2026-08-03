@@ -11,6 +11,7 @@ from typing import Optional
 import yaml
 from openpyxl import load_workbook
 
+from slam_benchmark.algorithms.contracts import EvaluationWorkflowConfig
 from slam_benchmark.cli import main
 from slam_benchmark.evaluation import (
     EvaluationError,
@@ -38,24 +39,25 @@ class EvaluationModuleTests(unittest.TestCase):
     def test_sf_vo_writes_evaluation_facts_and_two_level_summary(self) -> None:
         self._freeze_segment_order(1)
         segment_dir = self._write_run_receipt(0, "success")
+        wf_config = EvaluationWorkflowConfig(workflow="sf_vo")
+        eval_subdir = segment_dir / "evaluation" / wf_config.directory_name
         receipt = self.service.evaluate(
-            self._request(0, "sf_vo", segment_dir)
+            self._request(0, "sf_vo", segment_dir, eval_subdir)
         )
 
-        workbook_path = self.writer.update(self.test_root, "sf_vo")
+        workbook_path = self.writer.update(self.test_root, (wf_config,))
 
-        evaluation_dir = segment_dir / "evaluation"
         self.assertEqual(receipt.status, "success")
-        self.assertTrue((evaluation_dir / "metrics.json").is_file())
-        self.assertTrue((evaluation_dir / "receipt.yaml").is_file())
+        self.assertTrue((eval_subdir / "metrics.json").is_file())
+        self.assertTrue((eval_subdir / "receipt.yaml").is_file())
         self.assertIn(
             "fake voeval sf_vo",
-            (evaluation_dir / "voeval.log").read_text(encoding="utf-8"),
+            (eval_subdir / "voeval.log").read_text(encoding="utf-8"),
         )
 
         workbook = load_workbook(workbook_path)
         self.addCleanup(workbook.close)
-        sheet = workbook["Summary"]
+        sheet = workbook["sf_vo"]
         self.assertEqual(sheet["A1"].value, "运行编号")
         self.assertEqual(sheet["B1"].value, "结果路径")
         self.assertEqual(sheet["C1"].value, "数据集路径")
@@ -83,7 +85,9 @@ class EvaluationModuleTests(unittest.TestCase):
         self._freeze_algorithm_contract("sf_vo")
         self._freeze_segment_order(1)
         segment_dir = self._write_run_receipt(0, "success")
-        self.service.evaluate(self._request(0, "sf_vo", segment_dir))
+        wf_config = EvaluationWorkflowConfig(workflow="sf_vo")
+        eval_subdir = segment_dir / "evaluation" / wf_config.directory_name
+        self.service.evaluate(self._request(0, "sf_vo", segment_dir, eval_subdir))
         self.fake_voeval.unlink()
 
         output = io.StringIO()
@@ -103,7 +107,7 @@ class EvaluationModuleTests(unittest.TestCase):
         self.assertIn(str(workbook_path), output.getvalue())
         workbook = load_workbook(workbook_path)
         self.addCleanup(workbook.close)
-        sheet = workbook["Summary"]
+        sheet = workbook["sf_vo"]
         self.assertEqual(sheet["C3"].value, str(self.root / "data-0"))
         self.assertEqual(sheet["D3"].value, 1)
 
@@ -122,29 +126,32 @@ class EvaluationModuleTests(unittest.TestCase):
     def test_custom_frame_delta_reaches_voeval_metrics_and_workbook(self) -> None:
         self._freeze_segment_order(1, rpe_delta_value=5, rpe_delta_unit="f")
         segment_dir = self._write_run_receipt(0, "success")
+        wf_config = EvaluationWorkflowConfig(workflow="sf_vo")
+        eval_subdir = segment_dir / "evaluation" / wf_config.directory_name
         receipt = self.service.evaluate(
             self._request(
                 0,
                 "sf_vo",
                 segment_dir,
+                eval_subdir,
                 rpe_delta_value=5,
                 rpe_delta_unit="f",
             )
         )
 
-        workbook_path = self.writer.update(self.test_root, "sf_vo")
+        workbook_path = self.writer.update(self.test_root, (wf_config,))
         delta_index = receipt.command.index("--delta")
         unit_index = receipt.command.index("--unit")
         self.assertEqual(receipt.command[delta_index + 1], "5")
         self.assertEqual(receipt.command[unit_index + 1], "f")
-        metrics = self._yaml(segment_dir / "evaluation" / "metrics.json")
+        metrics = self._yaml(eval_subdir / "metrics.json")
         self.assertEqual(metrics["rpe_translation_m"]["delta_value"], 5)
         self.assertEqual(metrics["rpe_translation_m"]["delta_unit"], "f")
 
         workbook = load_workbook(workbook_path)
         self.addCleanup(workbook.close)
         self.assertEqual(
-            workbook["Summary"]["D1"].value,
+            workbook["sf_vo"]["D1"].value,
             "RPE 平移误差 (delta=5f)",
         )
 
@@ -170,10 +177,12 @@ class EvaluationModuleTests(unittest.TestCase):
 
     def test_sf_vloc_colors_horizontal_error_and_keeps_failed_run(self) -> None:
         self._freeze_segment_order(6)
+        wf_config = EvaluationWorkflowConfig(workflow="sf_vloc")
         for run_index in range(5):
             segment_dir = self._write_run_receipt(run_index, "success")
+            eval_subdir = segment_dir / "evaluation" / wf_config.directory_name
             receipt = self.service.evaluate(
-                self._request(run_index, "sf_vloc", segment_dir)
+                self._request(run_index, "sf_vloc", segment_dir, eval_subdir)
             )
             self.assertEqual(receipt.status, "success")
         failed_dir = self._write_run_receipt(
@@ -182,11 +191,11 @@ class EvaluationModuleTests(unittest.TestCase):
             failure_reason="algorithm failed",
         )
 
-        workbook_path = self.writer.update(self.test_root, "sf_vloc")
+        workbook_path = self.writer.update(self.test_root, (wf_config,))
 
         workbook = load_workbook(workbook_path)
         self.addCleanup(workbook.close)
-        sheet = workbook["Summary"]
+        sheet = workbook["sf_vloc"]
         self.assertEqual(
             [sheet.cell(row=1, column=column).value for column in range(1, 11)],
             [
@@ -223,27 +232,28 @@ class EvaluationModuleTests(unittest.TestCase):
         segment_dir = self._write_run_receipt(0, "success")
         data_dir = self.root / "force-evaluation-failure"
         data_dir.mkdir()
+        wf_config = EvaluationWorkflowConfig(workflow="sf_vo")
+        eval_subdir = segment_dir / "evaluation" / wf_config.directory_name
 
         receipt = self.service.evaluate(
-            self._request(0, "sf_vo", segment_dir, data_dir=data_dir)
+            self._request(0, "sf_vo", segment_dir, eval_subdir, data_dir=data_dir)
         )
-        workbook_path = self.writer.update(self.test_root, "sf_vo")
+        workbook_path = self.writer.update(self.test_root, (wf_config,))
 
-        evaluation_dir = segment_dir / "evaluation"
         self.assertEqual(receipt.status, "failed")
         self.assertEqual(receipt.exit_code, 7)
-        self.assertFalse((evaluation_dir / "metrics.json").exists())
+        self.assertFalse((eval_subdir / "metrics.json").exists())
         self.assertIn(
             "intentional evaluator failure",
-            (evaluation_dir / "voeval.log").read_text(encoding="utf-8"),
+            (eval_subdir / "voeval.log").read_text(encoding="utf-8"),
         )
-        saved_receipt = self._yaml(evaluation_dir / "receipt.yaml")
+        saved_receipt = self._yaml(eval_subdir / "receipt.yaml")
         self.assertEqual(saved_receipt["status"], "failed")
         self.assertIn("code 7", saved_receipt["failure_reason"])
 
         workbook = load_workbook(workbook_path)
         self.addCleanup(workbook.close)
-        sheet = workbook["Summary"]
+        sheet = workbook["sf_vo"]
         self.assertEqual(sheet["K3"].value, "success")
         self.assertEqual(sheet["L3"].value, "failed")
         self.assertIn("code 7", sheet["M3"].value)
@@ -252,12 +262,13 @@ class EvaluationModuleTests(unittest.TestCase):
     def test_summary_lists_planned_but_not_run_segment(self) -> None:
         self._freeze_segment_order(2)
         self._write_run_receipt(0, "failed", failure_reason="first run failed")
+        wf_config = EvaluationWorkflowConfig(workflow="sf_vo")
 
-        workbook_path = self.writer.update(self.test_root, "sf_vo")
+        workbook_path = self.writer.update(self.test_root, (wf_config,))
 
         workbook = load_workbook(workbook_path)
         self.addCleanup(workbook.close)
-        sheet = workbook["Summary"]
+        sheet = workbook["sf_vo"]
         self.assertEqual(sheet["A3"].value, 0)
         self.assertEqual(sheet["K3"].value, "failed")
         self.assertEqual(sheet["L3"].value, "not_run")
@@ -342,6 +353,7 @@ class EvaluationModuleTests(unittest.TestCase):
         run_index: int,
         workflow: str,
         segment_dir: Path,
+        evaluation_dir: Optional[Path] = None,
         *,
         data_dir: Optional[Path] = None,
         rpe_delta_value: float = 100.0,
@@ -359,7 +371,7 @@ class EvaluationModuleTests(unittest.TestCase):
             workflow=workflow,
             data_dir=selected_data_dir,
             log_dir=segment_dir,
-            evaluation_dir=segment_dir / "evaluation",
+            evaluation_dir=evaluation_dir or (segment_dir / "evaluation"),
             rpe_delta_value=rpe_delta_value,
             rpe_delta_unit=rpe_delta_unit,
         )

@@ -44,6 +44,7 @@ class EvaluationRequest:
     evaluation_dir: Path
     rpe_delta_value: float = DEFAULT_RPE_DELTA_VALUE
     rpe_delta_unit: str = DEFAULT_RPE_DELTA_UNIT
+    vo_filename: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -65,9 +66,10 @@ class EvaluationReceipt:
     log_path: Path
     invalid_metrics: Tuple[str, ...]
     failure_reason: Optional[str]
+    vo_filename: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        result: Dict[str, Any] = {
             "schema_version": EVALUATION_RECEIPT_SCHEMA_VERSION,
             "test_id": self.test_id,
             "algorithm": self.algorithm_id,
@@ -87,3 +89,6 @@ class EvaluationReceipt:
             "invalid_metrics": list(self.invalid_metrics),
             "failure_reason": self.failure_reason,
         }
+        if self.vo_filename is not None:
+            result["vo_filename"] = self.vo_filename
+        return result

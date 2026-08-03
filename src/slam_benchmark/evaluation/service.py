@@ -148,6 +148,7 @@ class EvaluationService:
                 log_path=log_path,
                 invalid_metrics=invalid_metrics,
                 failure_reason=failure_reason,
+                vo_filename=request.vo_filename,
             )
             _save_yaml_atomic(receipt_path, receipt.to_dict())
             trace.complete(
@@ -169,7 +170,7 @@ class EvaluationService:
         rpe_delta_value: float,
         rpe_delta_unit: str,
     ) -> Tuple[str, ...]:
-        return self.voeval_command + (
+        command = self.voeval_command + (
             request.workflow,
             str(request.data_dir.expanduser().resolve()),
             str(request.log_dir.expanduser().resolve()),
@@ -183,6 +184,9 @@ class EvaluationService:
             str(metrics_path),
             "--verbose",
         )
+        if request.vo_filename is not None:
+            command = command + ("--vo_filename", request.vo_filename)
+        return command
 
     def _run_process(
         self,

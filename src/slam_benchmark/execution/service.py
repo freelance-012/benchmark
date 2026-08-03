@@ -7,7 +7,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-from ..algorithms.contracts import AlgorithmContract, get_algorithm_contract
+from ..algorithms.contracts import (
+    AlgorithmContract,
+    EvaluationWorkflowConfig,
+    get_algorithm_contract,
+)
 from ..compilation.models import BuildReceipt
 from ..compilation.service import BuildError, BuildService
 from ..compilation.storage import BuildReceiptStore
@@ -832,9 +836,15 @@ class ExecutionService:
         run_receipt: SegmentRunReceipt,
         test_root: Path,
     ) -> Tuple[Optional[str], Optional[str]]:
-        workflow = contract.evaluation_workflow
+        workflows = contract.evaluation_workflows
+        if not workflows and contract.evaluation_workflow is not None:
+            workflows = (
+                EvaluationWorkflowConfig(
+                    workflow=contract.evaluation_workflow, vo_filename=None
+                ),
+            )
         progress_detail = _segment_progress_detail(instance, segment)
-        if workflow is None:
+        if not workflows:
             self.progress.advance(
                 MODULE_TOTAL,
                 detail=f"{progress_detail}：结果已保存",
@@ -849,31 +859,37 @@ class ExecutionService:
                 else paths.segment_dir
             )
             self.progress.begin(MODULE_EVALUATE, detail=progress_detail)
-            try:
-                evaluation_receipt = self.evaluation_service.evaluate(
-                    EvaluationRequest(
-                        test_id=test_root.name,
-                        algorithm_id=contract.algorithm_id,
-                        run_index=run_receipt.run_index,
-                        dataset_id=instance.dataset_id,
-                        dataset_type=instance.dataset_type,
-                        segment_id=segment.segment_id,
-                        workflow=workflow,
-                        data_dir=instance.root_path,
-                        log_dir=algorithm_output_dir,
-                        evaluation_dir=paths.evaluation_dir,
-                        rpe_delta_value=request.rpe_delta_value,
-                        rpe_delta_unit=request.rpe_delta_unit,
+            for wf_config in workflows:
+                eval_subdir = paths.evaluation_dir / wf_config.directory_name
+                try:
+                    evaluation_receipt = self.evaluation_service.evaluate(
+                        EvaluationRequest(
+                            test_id=test_root.name,
+                            algorithm_id=contract.algorithm_id,
+                            run_index=run_receipt.run_index,
+                            dataset_id=instance.dataset_id,
+                            dataset_type=instance.dataset_type,
+                            segment_id=segment.segment_id,
+                            workflow=wf_config.workflow,
+                            data_dir=instance.root_path,
+                            log_dir=algorithm_output_dir,
+                            evaluation_dir=eval_subdir,
+                            rpe_delta_value=request.rpe_delta_value,
+                            rpe_delta_unit=request.rpe_delta_unit,
+                            vo_filename=wf_config.vo_filename,
+                        )
                     )
-                )
-            except EvaluationError as exc:
-                self.progress.describe(
-                    MODULE_EVALUATE,
-                    f"{progress_detail}：评估保存失败",
-                )
-                raise RunStorageError(str(exc)) from exc
-            evaluation_status = evaluation_receipt.status
-            evaluation_failure = evaluation_receipt.failure_reason
+                except EvaluationError as exc:
+                    self.progress.describe(
+                        MODULE_EVALUATE,
+                        f"{progress_detail}：评估保存失败",
+                    )
+                    raise RunStorageError(str(exc)) from exc
+                if evaluation_receipt.status != "success":
+                    evaluation_status = evaluation_receipt.status
+                    evaluation_failure = evaluation_receipt.failure_reason
+            if evaluation_status == "not_run":
+                evaluation_status = "success"
             evaluation_detail = f"{progress_detail}：{evaluation_status}"
         else:
             evaluation_detail = f"{progress_detail}：跳过"
@@ -906,11 +922,17 @@ class ExecutionService:
         test_root: Path,
         contract: AlgorithmContract,
     ) -> None:
-        workflow = contract.evaluation_workflow
-        if workflow is None:
+        workflows = contract.evaluation_workflows
+        if not workflows and contract.evaluation_workflow is not None:
+            workflows = (
+                EvaluationWorkflowConfig(
+                    workflow=contract.evaluation_workflow, vo_filename=None
+                ),
+            )
+        if not workflows:
             return
         try:
-            self.summary_writer.update(test_root, workflow)
+            self.summary_writer.update(test_root, workflows)
         except EvaluationError as exc:
             raise RunStorageError(str(exc)) from exc
 

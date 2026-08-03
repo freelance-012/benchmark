@@ -759,7 +759,7 @@ print("integration voeval complete")
         )
 
         self.assertEqual(summary.status, "success")
-        evaluation_dir = summary.result_root / "dataset" / "0" / "evaluation"
+        evaluation_dir = summary.result_root / "dataset" / "0" / "evaluation" / "sf_vo"
         self.assertTrue((evaluation_dir / "metrics.json").is_file())
         evaluation_receipt = self._yaml(evaluation_dir / "receipt.yaml")
         self.assertEqual(evaluation_receipt["status"], "success")
@@ -780,7 +780,7 @@ print("integration voeval complete")
         )
         workbook = load_workbook(summary.result_root / "run_summary.xlsx")
         self.addCleanup(workbook.close)
-        sheet = workbook["Summary"]
+        sheet = workbook["sf_vo"]
         self.assertEqual(sheet["C1"].value, "数据集路径")
         self.assertEqual(sheet["C3"].value, str(dataset))
         self.assertEqual(sheet["D1"].value, "RPE 平移误差 (delta=5f)")
