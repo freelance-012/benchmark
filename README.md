@@ -64,14 +64,20 @@ benchmark/
 使用系统 Python 安装到当前用户目录，不创建或激活虚拟环境：
 
 ```bash
-python3 -m pip install --user --break-system-packages -e .
+python3 -m pip install --user -e .
 export PATH="${HOME}/.local/bin:${PATH}"
 benchmark --help
 ```
 
-`--user` 将 Python 包和 `benchmark` 命令安装在当前用户目录。Ubuntu、Debian
-等启用了外部管理保护的系统需要 `--break-system-packages`；其他系统的 pip
-不支持该参数时可以将它去掉。
+`--user` 将 Python 包和 `benchmark` 命令安装在当前用户目录。
+
+**注意：** 如果你的系统使用 PEP 668 外部管理保护（如 Ubuntu 23.04+、Debian 12+），且 pip 版本 >= 23.0.1，需要添加 `--break-system-packages` 参数：
+
+```bash
+python3 -m pip install --user --break-system-packages -e .
+```
+
+可以通过 `python3 -m pip --version` 检查 pip 版本。如果版本低于 23.0.1，则不需要 `--break-system-packages` 参数。
 
 只安装运行依赖时使用：
 
